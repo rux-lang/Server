@@ -1,0 +1,17 @@
+[advisories]
+informational_warnings = ["unmaintained", "unsound", "notice"]
+severity_threshold = "high"
+
+[database]
+fetch = true
+stale = false
+
+[output]
+deny = []
+format = "terminal"
+quiet = false
+show_tree = true
+
+[yanked]
+enabled = true
+update_index = true

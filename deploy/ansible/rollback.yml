@@ -1,0 +1,123 @@
+---
+- name: Roll back to an installed Rux Server release
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    rux_release_health_retries: 30
+    rux_release_health_delay_seconds: 2
+    rux_release_verify_public: true
+    rux_release_root: /srv/rux-server/releases
+    rux_current_path: /srv/rux-server/current
+  pre_tasks:
+    - name: Validate rollback inputs
+      ansible.builtin.assert:
+        that:
+          - rux_rollback_release is defined
+          - rux_rollback_release is match('^[0-9a-f]{40}$')
+          - rux_confirm_schema_compatible is defined
+          - rux_confirm_schema_compatible | bool
+        fail_msg: >-
+          Supply the exact installed release SHA and
+          rux_confirm_schema_compatible=true. Production migrations are never reverted.
+
+    - name: Define rollback paths
+      ansible.builtin.set_fact:
+        rux_rollback_target: "{{ rux_release_root }}/{{ rux_rollback_release }}"
+
+  tasks:
+    - name: Check the rollback release layout
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ rux_rollback_target }}/release.json"
+        - "{{ rux_rollback_target }}/SHA256SUMS"
+        - "{{ rux_rollback_target }}/bin/rux-server"
+      register: rux_rollback_files
+
+    - name: Require an installed immutable rollback release
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+        fail_msg: "Rollback release file is missing: {{ item.item }}"
+      loop: "{{ rux_rollback_files.results }}"
+
+    - name: Read the rollback release manifest
+      ansible.builtin.slurp:
+        src: "{{ rux_rollback_target }}/release.json"
+      register: rux_rollback_manifest_source
+
+    - name: Validate the rollback release identity
+      ansible.builtin.assert:
+        that:
+          - (rux_rollback_manifest_source.content | b64decode | from_json).schema_version == 1
+          - (rux_rollback_manifest_source.content | b64decode | from_json).commit_sha == rux_rollback_release
+        fail_msg: The installed rollback release manifest does not match the requested SHA.
+
+    - name: Verify the installed rollback release bytes
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/sha256sum
+          - --check
+          - SHA256SUMS
+        chdir: "{{ rux_rollback_target }}"
+      changed_when: false
+
+    - name: Inspect the starting release symlink
+      ansible.builtin.stat:
+        path: "{{ rux_current_path }}"
+        follow: false
+      register: rux_rollback_starting_current
+
+    - name: Require an active release symlink before rollback
+      ansible.builtin.assert:
+        that:
+          - rux_rollback_starting_current.stat.exists
+          - rux_rollback_starting_current.stat.islnk
+        fail_msg: Manual rollback requires an existing active release symlink.
+
+    - name: Record the starting release target
+      ansible.builtin.set_fact:
+        rux_rollback_starting_target: "{{ rux_rollback_starting_current.stat.lnk_source }}"
+
+    - name: Select and verify the rollback release
+      block:
+        - name: Atomically select the rollback release
+          ansible.builtin.file:
+            src: "{{ rux_rollback_target }}"
+            dest: "{{ rux_current_path }}"
+            state: link
+            force: true
+            owner: root
+            group: root
+
+        - name: Restart the selected rollback release
+          ansible.builtin.systemd_service:
+            name: rux-server
+            state: restarted
+
+        - name: Verify the selected rollback release
+          ansible.builtin.include_tasks: tasks/verify-release-health.yml
+      rescue:
+        - name: Restore the release active before rollback
+          ansible.builtin.file:
+            src: "{{ rux_rollback_starting_target }}"
+            dest: "{{ rux_current_path }}"
+            state: link
+            force: true
+            owner: root
+            group: root
+
+        - name: Restart the release active before rollback
+          ansible.builtin.systemd_service:
+            name: rux-server
+            state: restarted
+
+        - name: Verify the restored starting release
+          ansible.builtin.include_tasks: tasks/verify-release-health.yml
+
+        - name: Fail after rejecting the rollback target
+          ansible.builtin.fail:
+            msg: >-
+              Rollback target failed verification at {{ ansible_failed_task.name }}.
+              The starting application release was restored.

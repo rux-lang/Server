@@ -1,0 +1,121 @@
+[package]
+name = "rux-server"
+description = "Server-side Rux services: package registry, playground, language tooling, and chat integrations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axum.workspace = true
+governor.workspace = true
+http.workspace = true
+ipnet.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry-prometheus.workspace = true
+opentelemetry_sdk.workspace = true
+prometheus.workspace = true
+rux-application.workspace = true
+rux-artifact.workspace = true
+rux-infrastructure.workspace = true
+rux-manifest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+time.workspace = true
+tokio.workspace = true
+tower_governor.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
+utoipa.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+futures-util.workspace = true
+rux-domain.workspace = true
+tower.workspace = true
+uuid.workspace = true
+zip.workspace = true
+
+[lints]
+workspace = true
+
+[workspace]
+members = [
+  "crates/application",
+  "crates/artifact",
+  "crates/domain",
+  "crates/infrastructure",
+  "crates/manifest",
+  "tools/performance",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/rux-lang/Server"
+rust-version = "1.85"
+
+[workspace.dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+aws-config = "1"
+aws-credential-types = "1"
+aws-sdk-s3 = "1"
+aws-smithy-http-client = { version = "1", features = ["default-client"] }
+axum = { version = "0.8", features = ["multipart"] }
+futures-util = "0.3"
+governor = "0.10"
+http = "1"
+ipnet = "2"
+opentelemetry = { version = "0.32", features = ["metrics", "trace"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["grpc-tonic", "trace"] }
+opentelemetry-prometheus = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["metrics", "trace"] }
+prometheus = "0.14"
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rux-application = { path = "crates/application" }
+rux-artifact = { path = "crates/artifact" }
+rux-domain = { path = "crates/domain" }
+rux-infrastructure = { path = "crates/infrastructure" }
+rux-manifest = { path = "crates/manifest" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2.6"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+spdx = "0.13"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "macros", "migrate", "json", "time", "uuid"] }
+thiserror = "2"
+tempfile = "3"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
+tower = { version = "0.5", features = ["util"] }
+tower_governor = { version = "0.8", default-features = false, features = ["axum"] }
+tower-http = { version = "0.6", features = ["cors", "limit", "request-id", "sensitive-headers", "trace"] }
+tracing = "0.1"
+tracing-opentelemetry = "0.33"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+unicode-casefold = "0.2"
+unicode-normalization = "0.1"
+utoipa = { version = "5", features = ["axum_extras"] }
+url = "2.5"
+uuid = { version = "1", default-features = false, features = ["std"] }
+zip = { version = "7.2", default-features = false, features = ["deflate"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+module_name_repetitions = "allow"

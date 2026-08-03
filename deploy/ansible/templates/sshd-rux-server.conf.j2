@@ -1,0 +1,12 @@
+Port {{ rux_ssh_port }}
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+AllowAgentForwarding no
+AllowTcpForwarding local
+X11Forwarding no
+PermitTunnel no
+PermitUserEnvironment no
+AllowUsers {{ rux_admin_user }}

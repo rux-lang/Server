@@ -1,0 +1,68 @@
+---
+- name: Require the supported host platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_version is version('26.04', '==')
+      - ansible_facts.architecture == 'x86_64'
+    fail_msg: Production provisioning supports only dedicated x86-64 Ubuntu 26.04 hosts.
+
+- name: Require administrator access inputs
+  ansible.builtin.assert:
+    that:
+      - rux_admin_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - rux_admin_authorized_keys | length > 0
+      - rux_ssh_allowed_cidrs | length > 0
+      - rux_ssh_port | int >= 1
+      - rux_ssh_port | int <= 65535
+    fail_msg: Supply a valid administrator, at least one SSH public key, and at least one allowed CIDR.
+
+- name: Require exact production origins and storage URLs
+  ansible.builtin.assert:
+    that:
+      - rux_api_address is match('^[A-Za-z0-9.-]+$')
+      - rux_allowed_web_origin is match('^https://[A-Za-z0-9.-]+$')
+      - rux_web_callback_url == rux_allowed_web_origin ~ '/packages/-/auth/callback'
+      - rux_github_callback_url == 'https://' ~ rux_api_address ~ '/v1/auth/github/callback'
+      - rux_storage_endpoint is match('^https://[^/]+$')
+      - rux_package_cdn_base_url is match('^https://[^?#]+/$')
+    fail_msg: Production domains and URLs must use the exact HTTPS topology documented by the registry.
+
+- name: Require all production secrets
+  ansible.builtin.assert:
+    that:
+      - rux_postgres_password | length >= 24
+      - rux_storage_access_key | length > 0
+      - rux_storage_secret_key | length > 0
+      - rux_github_client_id | length > 0
+      - rux_github_client_secret | length > 0
+      - rux_grafana_admin_password | length >= 24
+      - rux_alert_warning_webhook_url is match('^https://')
+      - rux_alert_critical_webhook_url is match('^https://')
+      - rux_backup_access_key | length > 0 or rux_backup_test_mode | bool
+      - rux_backup_secret_key | length > 0 or rux_backup_test_mode | bool
+      - rux_backup_cipher_passphrase | length >= 32 or rux_backup_test_mode | bool
+    fail_msg: Supply strong database/Grafana credentials and all provider and alerting secrets securely.
+  no_log: true
+
+- name: Require an isolated production backup repository
+  ansible.builtin.assert:
+    that:
+      - rux_backup_repo_type in ['s3', 'posix']
+      - rux_backup_repo_type == 's3' or rux_backup_test_mode | bool
+      - not rux_backup_test_mode | bool or rux_backup_repo_type == 'posix'
+      - rux_backup_test_mode | bool or rux_backup_endpoint is match('^https://[^/]+$')
+      - rux_backup_test_mode | bool or rux_backup_bucket | length > 0
+      - rux_backup_test_mode | bool or rux_backup_region | length > 0
+      - rux_backup_test_mode | bool or rux_backup_endpoint != rux_storage_endpoint
+      - rux_backup_test_mode | bool or rux_backup_region != rux_storage_region
+      - rux_backup_test_mode | bool or rux_backup_bucket != rux_storage_bucket
+    fail_msg: Production backups require a dedicated S3 repository in a different region; POSIX repositories are test-only.
+  no_log: true
+
+- name: Require distinct alert receivers
+  ansible.builtin.assert:
+    that:
+      - rux_alert_warning_webhook_url != rux_alert_critical_webhook_url
+    fail_msg: Warning and critical alerts must use distinct webhook receivers.
+  no_log: true

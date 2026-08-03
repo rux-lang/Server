@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+/target/
+.data/
+.cache/
+.performance/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+*.log
+/deploy/ansible/inventory/production.yml
+/deploy/ansible/secrets/

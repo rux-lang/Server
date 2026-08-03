@@ -1,0 +1,110 @@
+---
+- name: Provision the Rux Server production host
+  hosts: all
+  become: true
+  gather_facts: true
+
+  handlers:
+    - name: Validate and restart SSH
+      ansible.builtin.command: /usr/sbin/sshd -t
+      changed_when: true
+      notify: Restart SSH
+
+    - name: Restart SSH
+      ansible.builtin.systemd_service:
+        name: ssh
+        state: restarted
+
+    - name: Validate and reload nftables
+      ansible.builtin.command: /usr/sbin/nft --check --file /etc/nftables.conf
+      changed_when: true
+      notify: Reload nftables
+
+    - name: Reload nftables
+      ansible.builtin.systemd_service:
+        name: nftables
+        state: reloaded
+
+    - name: Restart PostgreSQL
+      ansible.builtin.systemd_service:
+        name: postgresql
+        state: restarted
+
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Restart backup metrics exporter
+      ansible.builtin.systemd_service:
+        name: rux-node-exporter
+        state: restarted
+
+    - name: Restart journald
+      ansible.builtin.systemd_service:
+        name: systemd-journald
+        state: restarted
+
+    - name: Validate and reload Caddy
+      ansible.builtin.command: /usr/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      changed_when: true
+      notify: Reload Caddy
+
+    - name: Reload Caddy
+      ansible.builtin.systemd_service:
+        name: caddy
+        state: reloaded
+
+    - name: Validate and restart Prometheus
+      ansible.builtin.command: /usr/local/bin/promtool check config /etc/prometheus/prometheus.yml
+      changed_when: true
+      notify: Restart Prometheus
+
+    - name: Restart Prometheus
+      ansible.builtin.systemd_service:
+        name: prometheus
+        state: restarted
+
+    - name: Validate and restart Alertmanager
+      ansible.builtin.command: /usr/local/bin/amtool check-config /etc/alertmanager/alertmanager.yml
+      changed_when: true
+      no_log: true
+      notify: Restart Alertmanager
+
+    - name: Restart Alertmanager
+      ansible.builtin.systemd_service:
+        name: alertmanager
+        state: restarted
+
+    - name: Restart Grafana
+      ansible.builtin.systemd_service:
+        name: grafana-server
+        state: restarted
+
+  tasks:
+    - name: Validate provisioning inputs
+      ansible.builtin.import_tasks: tasks/preflight.yml
+      tags: [always]
+
+    - name: Harden the base host
+      ansible.builtin.import_tasks: tasks/base.yml
+      tags: [base]
+
+    - name: Configure PostgreSQL
+      ansible.builtin.import_tasks: tasks/postgresql.yml
+      tags: [postgresql]
+
+    - name: Configure production recovery
+      ansible.builtin.import_tasks: tasks/recovery.yml
+      tags: [postgresql, recovery]
+
+    - name: Configure the API runtime
+      ansible.builtin.import_tasks: tasks/api.yml
+      tags: [api]
+
+    - name: Configure Caddy
+      ansible.builtin.import_tasks: tasks/caddy.yml
+      tags: [caddy]
+
+    - name: Configure production observability
+      ansible.builtin.import_tasks: tasks/observability.yml
+      tags: [observability]

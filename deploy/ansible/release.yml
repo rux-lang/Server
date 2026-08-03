@@ -1,0 +1,334 @@
+---
+- name: Deploy an immutable Rux Server release
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    rux_release_health_retries: 30
+    rux_release_health_delay_seconds: 2
+    rux_release_verify_public: true
+    rux_release_root: /srv/rux-server/releases
+    rux_current_path: /srv/rux-server/current
+  pre_tasks:
+    - name: Validate release deployment inputs
+      ansible.builtin.assert:
+        that:
+          - rux_release_archive is defined
+          - rux_release_archive | length > 0
+          - rux_release_archive is ansible.builtin.file
+          - rux_release_sha256 is defined
+          - rux_release_sha256 is match('^[0-9a-f]{64}$')
+          - rux_migrations_approved is defined
+          - rux_migrations_approved | bool
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version is version('26.04', '==')
+          - ansible_facts.architecture == 'x86_64'
+        fail_msg: >-
+          Supply a local release archive, its lowercase SHA-256, and
+          rux_migrations_approved=true from an x86-64 Ubuntu 26.04 inventory.
+
+    - name: Define checksum-scoped staging paths
+      ansible.builtin.set_fact:
+        rux_release_upload: "{{ rux_release_root }}/.upload-{{ rux_release_sha256 }}.tar.gz"
+        rux_release_staging: "{{ rux_release_root }}/.staging-{{ rux_release_sha256 }}"
+
+  tasks:
+    - name: Check the provisioned release boundary
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ rux_release_root }}"
+        - /etc/rux-server/api.env
+        - /etc/systemd/system/rux-server.service
+      register: rux_release_prerequisites
+
+    - name: Require a provisioned production host
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+        fail_msg: Run the production provisioning playbook before deploying a release.
+      loop: "{{ rux_release_prerequisites.results }}"
+
+    - name: Remove stale checksum-scoped staging data
+      ansible.builtin.file:
+        path: "{{ rux_release_staging }}"
+        state: absent
+
+    - name: Upload the immutable release archive
+      ansible.builtin.copy:
+        src: "{{ rux_release_archive }}"
+        dest: "{{ rux_release_upload }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Calculate the uploaded archive checksum
+      ansible.builtin.stat:
+        path: "{{ rux_release_upload }}"
+        checksum_algorithm: sha256
+      register: rux_release_uploaded_archive
+
+    - name: Reject an altered release archive
+      ansible.builtin.assert:
+        that:
+          - rux_release_uploaded_archive.stat.checksum == rux_release_sha256
+        fail_msg: The uploaded release archive does not match its reviewed SHA-256.
+
+    - name: Create the private release staging directory
+      ansible.builtin.file:
+        path: "{{ rux_release_staging }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Extract the candidate release
+      ansible.builtin.unarchive:
+        src: "{{ rux_release_upload }}"
+        dest: "{{ rux_release_staging }}"
+        remote_src: true
+        owner: root
+        group: root
+
+    - name: Find symbolic links in the candidate release
+      ansible.builtin.find:
+        paths: "{{ rux_release_staging }}"
+        recurse: true
+        file_type: link
+        hidden: true
+      register: rux_release_links
+
+    - name: Reject symbolic links inside the candidate release
+      ansible.builtin.assert:
+        that:
+          - rux_release_links.matched == 0
+        fail_msg: Release archives must contain regular directories and files only.
+
+    - name: Read the candidate release manifest
+      ansible.builtin.slurp:
+        src: "{{ rux_release_staging }}/release.json"
+      register: rux_release_manifest_source
+
+    - name: Decode the candidate release manifest
+      ansible.builtin.set_fact:
+        rux_release_manifest: "{{ rux_release_manifest_source.content | b64decode | from_json }}"
+
+    - name: Validate the candidate release manifest
+      ansible.builtin.assert:
+        that:
+          - rux_release_manifest.schema_version == 1
+          - rux_release_manifest.tag is match('^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$')
+          - rux_release_manifest.tag == 'v' ~ rux_release_manifest.version
+          - rux_release_manifest.commit_sha is match('^[0-9a-f]{40}$')
+          - rux_release_manifest.target == 'x86_64-unknown-linux-gnu'
+          - rux_release_manifest.source_date_epoch | int > 0
+        fail_msg: The release manifest is malformed or targets a different platform.
+
+    - name: Define the immutable candidate path
+      ansible.builtin.set_fact:
+        rux_release_candidate: "{{ rux_release_root }}/{{ rux_release_manifest.commit_sha }}"
+
+    - name: Check candidate release files
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+      loop:
+        - { path: "{{ rux_release_staging }}/bin/rux-server", executable: true }
+        - { path: "{{ rux_release_staging }}/bin/sqlx", executable: true }
+        - { path: "{{ rux_release_staging }}/migrations", directory: true }
+        - { path: "{{ rux_release_staging }}/SHA256SUMS", regular: true }
+      register: rux_release_candidate_files
+
+    - name: Require the complete candidate layout
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - not (item.executable | default(false)) or item.stat.executable
+          - not (item.directory | default(false)) or item.stat.isdir
+          - not (item.regular | default(false)) or item.stat.isreg
+        fail_msg: "Candidate release file is missing or has the wrong type: {{ item.item.path }}"
+      loop: "{{ rux_release_candidate_files.results }}"
+
+    - name: Verify every extracted release file
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/sha256sum
+          - --check
+          - SHA256SUMS
+        chdir: "{{ rux_release_staging }}"
+      changed_when: false
+
+    - name: Check for an existing immutable release
+      ansible.builtin.stat:
+        path: "{{ rux_release_candidate }}"
+      register: rux_release_existing_candidate
+
+    - name: Compare an existing immutable release
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/diff
+          - --recursive
+          - --brief
+          - "{{ rux_release_candidate }}"
+          - "{{ rux_release_staging }}"
+      register: rux_release_existing_comparison
+      changed_when: false
+      failed_when: false
+      when: rux_release_existing_candidate.stat.exists
+
+    - name: Reject reuse of a commit SHA with different bytes
+      ansible.builtin.assert:
+        that:
+          - rux_release_existing_comparison.rc == 0
+        fail_msg: The immutable release directory already exists with different content.
+      when: rux_release_existing_candidate.stat.exists
+
+    - name: Finalize the new immutable release directory
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/mv
+          - --
+          - "{{ rux_release_staging }}"
+          - "{{ rux_release_candidate }}"
+      changed_when: true
+      when: not rux_release_existing_candidate.stat.exists
+
+    - name: Remove duplicate exact staging content
+      ansible.builtin.file:
+        path: "{{ rux_release_staging }}"
+        state: absent
+      when: rux_release_existing_candidate.stat.exists
+
+    - name: Report migration state before applying the release
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/bash
+          - -c
+          - >-
+            set -a; source /etc/rux-server/api.env;
+            export DATABASE_URL="$RUX_DATABASE_URL"; exec "$@"
+          - rux-server-migrate
+          - "{{ rux_release_candidate }}/bin/sqlx"
+          - migrate
+          - info
+          - --source
+          - "{{ rux_release_candidate }}/migrations"
+      changed_when: false
+
+    - name: Apply reviewed release migrations
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/bash
+          - -c
+          - >-
+            set -a; source /etc/rux-server/api.env;
+            export DATABASE_URL="$RUX_DATABASE_URL"; exec "$@"
+          - rux-server-migrate
+          - "{{ rux_release_candidate }}/bin/sqlx"
+          - migrate
+          - run
+          - --source
+          - "{{ rux_release_candidate }}/migrations"
+      register: rux_release_migration_run
+      changed_when: "'Applied' in rux_release_migration_run.stdout"
+
+    - name: Report migration state after applying the release
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/bash
+          - -c
+          - >-
+            set -a; source /etc/rux-server/api.env;
+            export DATABASE_URL="$RUX_DATABASE_URL"; exec "$@"
+          - rux-server-migrate
+          - "{{ rux_release_candidate }}/bin/sqlx"
+          - migrate
+          - info
+          - --source
+          - "{{ rux_release_candidate }}/migrations"
+      changed_when: false
+
+    - name: Inspect the active release symlink
+      ansible.builtin.stat:
+        path: "{{ rux_current_path }}"
+        follow: false
+      register: rux_release_previous_current
+
+    - name: Require current to be absent or a release symlink
+      ansible.builtin.assert:
+        that:
+          - not rux_release_previous_current.stat.exists or rux_release_previous_current.stat.islnk
+        fail_msg: The current release path exists but is not a symbolic link.
+
+    - name: Record the previous release target
+      ansible.builtin.set_fact:
+        rux_release_previous_target: >-
+          {{ rux_release_previous_current.stat.lnk_source
+             if rux_release_previous_current.stat.exists else '' }}
+
+    - name: Promote and verify the candidate release
+      block:
+        - name: Atomically select the candidate release
+          ansible.builtin.file:
+            src: "{{ rux_release_candidate }}"
+            dest: "{{ rux_current_path }}"
+            state: link
+            force: true
+            owner: root
+            group: root
+
+        - name: Restart the API on the selected release
+          ansible.builtin.systemd_service:
+            name: rux-server
+            state: restarted
+
+        - name: Verify the promoted release
+          ansible.builtin.include_tasks: tasks/verify-release-health.yml
+
+      rescue:
+        - name: Restore the previous release symlink
+          ansible.builtin.file:
+            src: "{{ rux_release_previous_target }}"
+            dest: "{{ rux_current_path }}"
+            state: link
+            force: true
+            owner: root
+            group: root
+          when: rux_release_previous_target | length > 0
+
+        - name: Restart the restored API release
+          ansible.builtin.systemd_service:
+            name: rux-server
+            state: restarted
+          when: rux_release_previous_target | length > 0
+
+        - name: Verify the restored release
+          ansible.builtin.include_tasks: tasks/verify-release-health.yml
+          when: rux_release_previous_target | length > 0
+
+        - name: Remove current after a failed first release
+          ansible.builtin.file:
+            path: "{{ rux_current_path }}"
+            state: absent
+          when: rux_release_previous_target | length == 0
+
+        - name: Stop the API after a failed first release
+          ansible.builtin.systemd_service:
+            name: rux-server
+            state: stopped
+          when: rux_release_previous_target | length == 0
+
+        - name: Fail after restoring the previous application release
+          ansible.builtin.fail:
+            msg: >-
+              Release promotion failed at {{ ansible_failed_task.name }}. The previous
+              application release was restored; applied migrations were not reverted.
+      always:
+        - name: Remove the uploaded release archive
+          ansible.builtin.file:
+            path: "{{ rux_release_upload }}"
+            state: absent
+
+        - name: Remove any remaining staging directory
+          ansible.builtin.file:
+            path: "{{ rux_release_staging }}"
+            state: absent

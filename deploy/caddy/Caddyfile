@@ -1,0 +1,14 @@
+{$RUX_API_ADDRESS:api.rux-lang.dev} {
+	encode zstd gzip
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+	}
+
+	@operational path /health /health/* /metrics
+	respond @operational 404
+
+	reverse_proxy {$RUX_API_UPSTREAM:127.0.0.1:8080}
+}

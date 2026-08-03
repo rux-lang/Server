@@ -1,0 +1,45 @@
+---
+- name: Verify the deployed release
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Inspect the active release symlink
+      ansible.builtin.stat:
+        path: /srv/rux-server/current
+        follow: false
+      register: rux_release_current
+
+    - name: Read service state
+      ansible.builtin.service_facts:
+
+    - name: Check release readiness
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/health/ready
+        status_code: 200
+        return_content: true
+      register: rux_release_ready
+
+    - name: Assert the immutable release is active
+      ansible.builtin.assert:
+        that:
+          - rux_release_current.stat.islnk
+          - rux_release_current.stat.lnk_source == '/srv/rux-server/releases/1111111111111111111111111111111111111111'
+          - ansible_facts.services['rux-server.service'].state == 'running'
+          - rux_release_ready.json.status == 'healthy'
+
+    - name: Check installed release ownership
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /srv/rux-server/releases/1111111111111111111111111111111111111111
+        - /srv/rux-server/releases/1111111111111111111111111111111111111111/release.json
+        - /srv/rux-server/releases/1111111111111111111111111111111111111111/bin/rux-server
+      register: rux_release_installed_files
+
+    - name: Assert installed releases remain root-owned
+      ansible.builtin.assert:
+        that:
+          - item.stat.pw_name == 'root'
+          - item.stat.gr_name == 'root'
+      loop: "{{ rux_release_installed_files.results }}"

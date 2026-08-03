@@ -1,0 +1,177 @@
+---
+- name: Verify the provisioned registry host
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Validate managed service configurations
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - /usr/sbin/sshd -t
+        - /usr/sbin/nft --check --file /etc/nftables.conf
+        - /usr/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+        - /usr/local/bin/promtool check config /etc/prometheus/prometheus.yml
+        - /usr/local/bin/amtool check-config /etc/alertmanager/alertmanager.yml
+      changed_when: false
+      no_log: true
+
+    - name: Read service state
+      ansible.builtin.service_facts:
+
+    - name: Assert expected service state
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services['postgresql@18-main.service'].state == 'running'
+          - ansible_facts.services['caddy.service'].state == 'running'
+          - ansible_facts.services['prometheus.service'].state == 'running'
+          - ansible_facts.services['alertmanager.service'].state == 'running'
+          - ansible_facts.services['grafana-server.service'].state == 'running'
+          - ansible_facts.services['rux-node-exporter.service'].state == 'running'
+          - ansible_facts.services['rux-server.service'].state != 'running'
+
+    - name: Verify recovery timer state
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-active
+          - "{{ item }}"
+      loop:
+        - rux-pgbackrest-full.timer
+        - rux-pgbackrest-diff.timer
+        - rux-pgbackrest-check.timer
+        - rux-postgres-backup-metrics.timer
+      changed_when: false
+
+    - name: Check root-owned secret files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/rux-server/api.env
+        - /etc/alertmanager/alertmanager.yml
+        - /etc/grafana/rux-server.env
+        - /etc/pgbackrest/pgbackrest.conf
+      register: rux_secret_files
+
+    - name: Assert secret ownership and permissions
+      ansible.builtin.assert:
+        that:
+          - item.stat.pw_name == 'root'
+          - item.stat.mode == '0640'
+      loop: "{{ rux_secret_files.results }}"
+
+    - name: Read listening sockets
+      ansible.builtin.command: /usr/bin/ss -lntup
+      register: rux_listeners
+      changed_when: false
+
+    - name: Assert private services bind only to loopback
+      ansible.builtin.assert:
+        that:
+          - "'127.0.0.1:5432' in rux_listeners.stdout"
+          - "'127.0.0.1:9090' in rux_listeners.stdout"
+          - "'127.0.0.1:9093' in rux_listeners.stdout"
+          - "'127.0.0.1:3001' in rux_listeners.stdout"
+          - "'127.0.0.1:9100' in rux_listeners.stdout"
+          - "'0.0.0.0:5432' not in rux_listeners.stdout"
+          - "'0.0.0.0:9090' not in rux_listeners.stdout"
+          - "'0.0.0.0:9093' not in rux_listeners.stdout"
+          - "'0.0.0.0:3001' not in rux_listeners.stdout"
+          - "'0.0.0.0:9100' not in rux_listeners.stdout"
+
+    - name: Create a post-backup recovery marker
+      community.postgresql.postgresql_query:
+        login_db: registry
+        query: |
+          CREATE TABLE rux_recovery_molecule_marker (value TEXT PRIMARY KEY);
+          INSERT INTO rux_recovery_molecule_marker (value) VALUES ('archived-after-full-backup');
+      become_user: postgres
+      become: true
+
+    - name: Verify WAL archival reaches the recovery repository
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/pgbackrest
+          - --stanza=registry
+          - check
+      become_user: postgres
+      become: true
+      changed_when: false
+
+    - name: Read pgBackRest backup metadata
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/pgbackrest
+          - --stanza=registry
+          - --output=json
+          - info
+      become_user: postgres
+      become: true
+      register: rux_backup_info
+      changed_when: false
+
+    - name: Assert an initial full backup exists
+      ansible.builtin.assert:
+        that:
+          - (rux_backup_info.stdout | from_json | first).backup | length > 0
+          - (rux_backup_info.stdout | from_json | first).backup[0].type == 'full'
+
+    - name: Stop PostgreSQL before the disposable restore test
+      ansible.builtin.systemd_service:
+        name: postgresql
+        state: stopped
+
+    - name: Remove the Molecule-only PostgreSQL data directory
+      ansible.builtin.file:
+        path: /var/lib/postgresql/18/main
+        state: absent
+
+    - name: Restore the full backup and archived WAL
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/pgbackrest
+          - --stanza=registry
+          - --archive-mode=off
+          - restore
+      become_user: postgres
+      become: true
+      changed_when: true
+
+    - name: Start the restored PostgreSQL cluster
+      ansible.builtin.systemd_service:
+        name: postgresql
+        state: started
+
+    - name: Wait for restored PostgreSQL readiness
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/pg_isready
+          - --dbname=registry
+      register: rux_restored_database_ready
+      retries: 30
+      delay: 2
+      until: rux_restored_database_ready.rc == 0
+      changed_when: false
+
+    - name: Verify archived WAL restored the post-backup marker
+      community.postgresql.postgresql_query:
+        login_db: registry
+        query: SELECT value FROM rux_recovery_molecule_marker
+      become_user: postgres
+      become: true
+      register: rux_recovery_marker
+      failed_when: rux_recovery_marker.query_result[0].value != 'archived-after-full-backup'
+
+    - name: Confirm public operational paths are blocked
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8082/health/ready
+        status_code: 404
+
+    - name: Confirm Prometheus is ready
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9090/-/ready
+        status_code: 200
+
+    - name: Confirm Grafana is healthy
+      ansible.builtin.uri:
+        url: http://127.0.0.1:3001/api/health
+        status_code: 200

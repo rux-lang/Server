@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing v-prefixed SemVer tag to package
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  supply-chain:
+    name: Verify release supply chain
+    permissions:
+      contents: read
+    uses: ./.github/workflows/supply-chain.yml
+    with:
+      ref: ${{ inputs.release_tag }}
+
+  package:
+    name: Build immutable release
+    needs: supply-chain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_tag }}
+      - name: Validate release identity
+        id: identity
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "release_tag must be a v-prefixed semantic version" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          commit=$(git rev-parse HEAD)
+          git merge-base --is-ancestor "$commit" origin/main
+          git tag --points-at HEAD | grep -Fx "$tag"
+          version=$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "rux-server") | .version')
+          test "$tag" = "v$version"
+          source_date_epoch=$(git show -s --format=%ct HEAD)
+          {
+            echo "commit=$commit"
+            echo "version=$version"
+            echo "source_date_epoch=$source_date_epoch"
+          } >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        run: rustup show
+      - name: Cache Cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: release-cargo-${{ runner.os }}-
+      - name: Test and build API
+        run: |
+          cargo test --locked --workspace --all-features
+          cargo build --locked -p rux-server --release
+          cargo install sqlx-cli --version 0.8.6 --locked \
+            --no-default-features --features rustls,postgres \
+            --root .release-tools
+      - name: Package and verify release
+        id: package
+        env:
+          RUX_RELEASE_TAG: ${{ inputs.release_tag }}
+          RUX_RELEASE_COMMIT: ${{ steps.identity.outputs.commit }}
+          RUX_RELEASE_VERSION: ${{ steps.identity.outputs.version }}
+          RUX_RELEASE_SOURCE_DATE_EPOCH: ${{ steps.identity.outputs.source_date_epoch }}
+          RUX_RELEASE_API_BINARY: target/release/rux-server
+          RUX_RELEASE_SQLX_BINARY: .release-tools/bin/sqlx
+          RUX_RELEASE_OUTPUT_DIRECTORY: release-output
+        run: |
+          chmod +x deploy/release/build-release.sh deploy/release/verify-release.sh
+          archive=$(deploy/release/build-release.sh)
+          deploy/release/verify-release.sh "$archive" "$archive.sha256"
+          {
+            echo "archive=$archive"
+            echo "checksum=$archive.sha256"
+          } >> "$GITHUB_OUTPUT"
+      - name: Stage release SBOM inputs
+        shell: bash
+        env:
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: |
+          set -euo pipefail
+          input_root=release-output/sbom-input
+          install -d "$input_root"
+          install -m 0644 Cargo.toml Cargo.lock "$input_root/"
+          install -m 0644 "$ARCHIVE" "$input_root/"
+      - name: Generate SPDX release SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: release-output/sbom-input
+          format: spdx-json
+          output-file: release-output/rux-server-${{ inputs.release_tag }}-${{ steps.identity.outputs.commit }}.spdx.json
+          syft-version: v1.50.0
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Validate release SBOM
+        id: sbom
+        shell: bash
+        env:
+          SBOM: release-output/rux-server-${{ inputs.release_tag }}-${{ steps.identity.outputs.commit }}.spdx.json
+        run: |
+          set -euo pipefail
+          test -s "$SBOM"
+          node scripts/supply-chain/validate-spdx.mjs "$SBOM"
+          echo "sbom=$SBOM" >> "$GITHUB_OUTPUT"
+      - name: Attest release provenance
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
+        with:
+          subject-path: ${{ steps.package.outputs.archive }}
+      - name: Attest release SBOM
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
+        with:
+          subject-path: ${{ steps.package.outputs.archive }}
+          sbom-path: ${{ steps.sbom.outputs.sbom }}
+      - name: Verify release attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: |
+          gh attestation verify "$ARCHIVE" --repo "$GITHUB_REPOSITORY"
+          gh attestation verify "$ARCHIVE" \
+            --repo "$GITHUB_REPOSITORY" \
+            --predicate-type https://spdx.dev/Document/v2.3
+      - name: Publish immutable draft assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
+          SBOM: ${{ steps.sbom.outputs.sbom }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release $RELEASE_TAG already exists; assets are never replaced" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            "$ARCHIVE" "$CHECKSUM" "$SBOM" \
+            --draft \
+            --verify-tag \
+            --title "Rux Server $RELEASE_TAG" \
+            --notes "Immutable production release for commit ${{ steps.identity.outputs.commit }}. Publish this draft only after the operator deployment succeeds."

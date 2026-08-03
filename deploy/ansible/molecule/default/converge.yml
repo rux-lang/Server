@@ -1,0 +1,30 @@
+---
+- name: Import the production provisioner
+  ansible.builtin.import_playbook: ../../site.yml
+  vars:
+    rux_admin_user: rux-admin
+    rux_admin_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGBUhICcdummyMoleculeKeyOnlyDoNotUse rux-test
+    rux_ssh_allowed_cidrs:
+      - 127.0.0.1/32
+      - ::1/128
+    rux_api_address: api.example.test
+    rux_caddy_api_address: http://127.0.0.1:8082
+    rux_allowed_web_origin: https://rux.example.test
+    rux_web_callback_url: https://rux.example.test/packages/-/auth/callback
+    rux_github_callback_url: https://api.example.test/v1/auth/github/callback
+    rux_postgres_password: molecule-postgres-password-12345
+    rux_storage_endpoint: https://fra1.digitaloceanspaces.com
+    rux_storage_bucket: packages
+    rux_storage_access_key: molecule-storage-access
+    rux_storage_secret_key: molecule-storage-secret
+    rux_storage_region: fra1
+    rux_package_cdn_base_url: https://packages.fra1.cdn.digitaloceanspaces.com/
+    rux_backup_repo_type: posix
+    rux_backup_test_mode: true
+    rux_backup_local_path: /var/lib/pgbackrest/molecule-repository
+    rux_github_client_id: molecule-github-client
+    rux_github_client_secret: molecule-github-secret
+    rux_grafana_admin_password: molecule-grafana-password-12345
+    rux_alert_warning_webhook_url: https://warning.example.test/alerts
+    rux_alert_critical_webhook_url: https://critical.example.test/alerts

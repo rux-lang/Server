@@ -1,0 +1,198 @@
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: sustained scrape failure becomes critical
+    interval: 1m
+    input_series:
+      - series: up{job="rux-server",instance="api:9464"}
+        values: 0+0x10
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: RuxServerApiMetricsMissing
+        exp_alerts:
+          - exp_labels:
+              instance: api:9464
+              job: rux-server
+              severity: critical
+            exp_annotations:
+              summary: Rux Server API metrics target is unavailable
+              description: Prometheus has been unable to scrape api:9464 for five minutes.
+              runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistryapimetricsmissing
+
+  - name: healthy scrape does not page
+    interval: 1m
+    input_series:
+      - series: up{job="rux-server",instance="api:9464"}
+        values: 1+0x10
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RuxServerApiMetricsMissing
+        exp_alerts: []
+
+  - name: sustained dependency failure becomes critical
+    interval: 1m
+    input_series:
+      - series: rux_dependency_ready{dependency="postgresql"}
+        values: 0+0x10
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: RuxServerDependencyUnavailable
+        exp_alerts:
+          - exp_labels:
+              dependency: postgresql
+              severity: critical
+            exp_annotations:
+              summary: Rux Server dependency is unavailable
+              description: The postgresql dependency has failed readiness probes for five minutes.
+              runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrydependencyunavailable
+
+  - name: absent cleanup success becomes warning
+    interval: 1m
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: RuxServerCleanupStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Rux Server orphan cleanup has no recent success
+              description: No successful orphan-cleanup sweep has been observed for three hours.
+              runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrycleanupstale
+
+  - name: pending WAL beyond the recovery objective becomes critical
+    interval: 1m
+    input_series:
+      - series: rux_postgres_wal_archive_oldest_pending_seconds
+        values: 301+0x10
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: RuxServerWalArchiveLagging
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Rux Server WAL archival exceeds the recovery objective
+              description: A PostgreSQL WAL segment has waited more than five minutes for off-host archival.
+              runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrywalarchivelagging
+
+  - name: current backup and repository check remain healthy
+    interval: 1m
+    input_series:
+      - series: rux_postgres_backup_last_success_unixtime_seconds{type="full"}
+        values: 1000+60x10
+      - series: rux_postgres_backup_last_success_unixtime_seconds{type="diff"}
+        values: 1000+60x10
+      - series: rux_postgres_backup_check_last_success_unixtime_seconds{check="repository"}
+        values: 1000+60x10
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RuxServerPostgresBackupStale
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: RuxServerPostgresFullBackupStale
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: RuxServerPostgresBackupCheckStale
+        exp_alerts: []
+
+  - name: one rehearsal target cannot mask the other
+    interval: 1m
+    input_series:
+      - series: rux_recovery_rehearsal_last_success_unixtime_seconds{target="postgresql"}
+        values: 1000+0x70
+    alert_rule_test:
+      - eval_time: 61m
+        alertname: RuxServerRecoveryRehearsalOverdue
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              target: spaces
+            exp_annotations:
+              summary: Rux Server recovery rehearsal is overdue
+              description: The spaces recovery path has no recorded successful rehearsal within 100 days.
+              runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistryrecoveryrehearsaloverdue
+
+  - name: sustained read latency with enough traffic becomes warning
+    interval: 1m
+    input_series:
+      - series: rux_http_server_request_duration_seconds_bucket{method="GET",route="/v1/packages/{namespace}/{package}",status_code="200",le="0.25"}
+        values: 0+0x35
+      - series: rux_http_server_request_duration_seconds_bucket{method="GET",route="/v1/packages/{namespace}/{package}",status_code="200",le="0.5"}
+        values: 0+10x35
+      - series: rux_http_server_request_duration_seconds_bucket{method="GET",route="/v1/packages/{namespace}/{package}",status_code="200",le="+Inf"}
+        values: 0+10x35
+      - series: rux_http_server_requests_total{method="GET",route="/v1/packages/{namespace}/{package}",status_code="200"}
+        values: 0+10x35
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: RuxServerReadLatencyBudgetExceeded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Rux Server read latency exceeds its launch budget
+              description: Successful public read requests have exceeded the 250 ms p95 budget under sufficient traffic.
+              runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistryreadlatencybudgetexceeded
+
+  - name: slow read latency without enough traffic does not warn
+    interval: 1m
+    input_series:
+      - series: rux_http_server_request_duration_seconds_bucket{method="GET",route="/v1/highlights",status_code="200",le="0.25"}
+        values: 0+0x35
+      - series: rux_http_server_request_duration_seconds_bucket{method="GET",route="/v1/highlights",status_code="200",le="0.5"}
+        values: 0+1x35
+      - series: rux_http_server_request_duration_seconds_bucket{method="GET",route="/v1/highlights",status_code="200",le="+Inf"}
+        values: 0+1x35
+      - series: rux_http_server_requests_total{method="GET",route="/v1/highlights",status_code="200"}
+        values: 0+1x35
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: RuxServerReadLatencyBudgetExceeded
+        exp_alerts: []
+
+  - name: sustained search latency with enough traffic becomes warning
+    interval: 1m
+    input_series:
+      - series: rux_http_server_request_duration_seconds_bucket{method="GET",route="/v1/search",status_code="200",le="0.5"}
+        values: 0+0x35
+      - series: rux_http_server_request_duration_seconds_bucket{method="GET",route="/v1/search",status_code="200",le="1"}
+        values: 0+3x35
+      - series: rux_http_server_request_duration_seconds_bucket{method="GET",route="/v1/search",status_code="200",le="+Inf"}
+        values: 0+3x35
+      - series: rux_http_server_requests_total{method="GET",route="/v1/search",status_code="200"}
+        values: 0+3x35
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: RuxServerSearchLatencyBudgetExceeded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Rux Server search latency exceeds its launch budget
+              description: Successful search requests have exceeded the 500 ms p95 budget under sufficient traffic.
+              runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrysearchlatencybudgetexceeded
+
+  - name: sustained publication latency with enough traffic becomes warning
+    interval: 1m
+    input_series:
+      - series: rux_http_server_request_duration_seconds_bucket{method="POST",route="/v1/packages",status_code="201",le="5"}
+        values: 0+0x90
+      - series: rux_http_server_request_duration_seconds_bucket{method="POST",route="/v1/packages",status_code="201",le="10"}
+        values: 0+1x90
+      - series: rux_http_server_request_duration_seconds_bucket{method="POST",route="/v1/packages",status_code="201",le="+Inf"}
+        values: 0+1x90
+      - series: rux_http_server_requests_total{method="POST",route="/v1/packages",status_code="201"}
+        values: 0+1x90
+    alert_rule_test:
+      - eval_time: 76m
+        alertname: RuxServerPublicationLatencyBudgetExceeded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Rux Server publication latency exceeds its launch budget
+              description: Successful publications have exceeded the five-second p95 budget under sufficient traffic.
+              runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrypublicationlatencybudgetexceeded

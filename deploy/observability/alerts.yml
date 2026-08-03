@@ -1,0 +1,228 @@
+groups:
+  - name: rux-server
+    rules:
+      - alert: RuxServerApiMetricsMissing
+        expr: up{job="rux-server"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Rux Server API metrics target is unavailable
+          description: Prometheus has been unable to scrape {{ $labels.instance }} for five minutes.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistryapimetricsmissing
+
+      - alert: RuxServerDependencyUnavailable
+        expr: rux_dependency_ready == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Rux Server dependency is unavailable
+          description: The {{ $labels.dependency }} dependency has failed readiness probes for five minutes.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrydependencyunavailable
+
+      - alert: RuxServerDependencyProbeStale
+        expr: time() - rux_dependency_last_probe_unixtime_seconds > 120
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Rux Server dependency monitoring is stale
+          description: No recent probe result exists for {{ $labels.dependency }}.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrydependencyprobestale
+
+      - alert: RuxServerElevatedServerErrors
+        expr: |
+          (
+            sum(increase(rux_http_server_requests_total{status_code=~"5.."}[10m]))
+            /
+            clamp_min(sum(increase(rux_http_server_requests_total[10m])), 1)
+          ) > 0.05
+          and
+          sum(increase(rux_http_server_requests_total[10m])) >= 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Rux Server API server-error ratio is elevated
+          description: More than 5% of at least 20 requests were 5xx responses during the last ten minutes.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistryelevatedservererrors
+
+      - alert: RuxServerReadLatencyBudgetExceeded
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(rux_http_server_request_duration_seconds_bucket{
+                method="GET",
+                route=~"/v1/index/.*|/v1/packages/.*|/v1/highlights|/v1/keywords",
+                status_code=~"2..|3.."
+              }[15m])
+            )
+          ) > 0.25
+          and
+          sum(increase(rux_http_server_requests_total{
+            method="GET",
+            route=~"/v1/index/.*|/v1/packages/.*|/v1/highlights|/v1/keywords",
+            status_code=~"2..|3.."
+          }[15m])) >= 100
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Rux Server read latency exceeds its launch budget
+          description: Successful public read requests have exceeded the 250 ms p95 budget under sufficient traffic.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistryreadlatencybudgetexceeded
+
+      - alert: RuxServerSearchLatencyBudgetExceeded
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(rux_http_server_request_duration_seconds_bucket{
+                method="GET", route="/v1/search", status_code="200"
+              }[15m])
+            )
+          ) > 0.5
+          and
+          sum(increase(rux_http_server_requests_total{
+            method="GET", route="/v1/search", status_code="200"
+          }[15m])) >= 30
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Rux Server search latency exceeds its launch budget
+          description: Successful search requests have exceeded the 500 ms p95 budget under sufficient traffic.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrysearchlatencybudgetexceeded
+
+      - alert: RuxServerPublicationLatencyBudgetExceeded
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(rux_http_server_request_duration_seconds_bucket{
+                method="POST", route="/v1/packages", status_code="201"
+              }[1h])
+            )
+          ) > 5
+          and
+          sum(increase(rux_http_server_requests_total{
+            method="POST", route="/v1/packages", status_code="201"
+          }[1h])) >= 5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Rux Server publication latency exceeds its launch budget
+          description: Successful publications have exceeded the five-second p95 budget under sufficient traffic.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrypublicationlatencybudgetexceeded
+
+      - alert: RuxServerCleanupFailed
+        expr: increase(rux_orphan_cleanup_runs_total{outcome="failure"}[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Rux Server orphan cleanup failed
+          description: At least one orphan-cleanup sweep failed during the last fifteen minutes.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrycleanupfailed
+
+      - alert: RuxServerCleanupStale
+        expr: (time() - rux_orphan_cleanup_last_success_unixtime_seconds > 10800) or absent(rux_orphan_cleanup_last_success_unixtime_seconds)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Rux Server orphan cleanup has no recent success
+          description: No successful orphan-cleanup sweep has been observed for three hours.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrycleanupstale
+
+      - alert: RuxServerCleanupDeletionFailures
+        expr: increase(rux_orphan_cleanup_objects_total{result="delete_failed"}[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Rux Server orphan deletions are failing
+          description: One or more eligible object versions could not be deleted during the last hour.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrycleanupdeletionfailures
+
+      - alert: RuxServerBackupMetricsMissing
+        expr: up{job="rux-node"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Rux Server recovery metrics are unavailable
+          description: Prometheus cannot scrape the loopback-only recovery metrics exporter.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrybackupmetricsmissing
+
+      - alert: RuxServerPostgresBackupFailed
+        expr: rux_postgres_backup_last_run_success == 0 or rux_postgres_backup_check_last_run_success == 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Rux Server PostgreSQL backup operation failed
+          description: The latest pgBackRest backup or repository check was unsuccessful.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrypostgresbackupfailed
+
+      - alert: RuxServerPostgresBackupStale
+        expr: (time() - max(rux_postgres_backup_last_success_unixtime_seconds) > 93600) or absent(rux_postgres_backup_last_success_unixtime_seconds)
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Rux Server PostgreSQL backup is stale
+          description: No full or differential backup has succeeded within the last 26 hours.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrypostgresbackupstale
+
+      - alert: RuxServerPostgresFullBackupStale
+        expr: (time() - rux_postgres_backup_last_success_unixtime_seconds{type="full"} > 691200) or absent(rux_postgres_backup_last_success_unixtime_seconds{type="full"})
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Rux Server PostgreSQL full backup is stale
+          description: No full backup has succeeded within the last eight days.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrypostgresbackupstale
+
+      - alert: RuxServerPostgresBackupCheckStale
+        expr: (time() - rux_postgres_backup_check_last_success_unixtime_seconds > 93600) or absent(rux_postgres_backup_check_last_success_unixtime_seconds)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Rux Server PostgreSQL repository check is stale
+          description: pgBackRest has not completed an end-to-end repository and WAL check within 26 hours.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrypostgresbackupcheckstale
+
+      - alert: RuxServerWalArchiveLagging
+        expr: rux_postgres_wal_archive_oldest_pending_seconds > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Rux Server WAL archival exceeds the recovery objective
+          description: A PostgreSQL WAL segment has waited more than five minutes for off-host archival.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrywalarchivelagging
+
+      - alert: RuxServerWalArchiveFailures
+        expr: increase(rux_postgres_wal_archive_failures_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Rux Server WAL archival is failing
+          description: PostgreSQL reported at least one failed WAL archive attempt in the last fifteen minutes.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistrywalarchivelagging
+
+      - alert: RuxServerRecoveryRehearsalOverdue
+        expr: |
+          (time() - rux_recovery_rehearsal_last_success_unixtime_seconds > 8640000)
+          or label_replace(absent(rux_recovery_rehearsal_last_success_unixtime_seconds{target="postgresql"}), "target", "postgresql", "", "")
+          or label_replace(absent(rux_recovery_rehearsal_last_success_unixtime_seconds{target="spaces"}), "target", "spaces", "", "")
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: Rux Server recovery rehearsal is overdue
+          description: The {{ $labels.target }} recovery path has no recorded successful rehearsal within 100 days.
+          runbook_url: https://github.com/rux-lang/Server/blob/main/docs/observability-runbook.md#ruxregistryrecoveryrehearsaloverdue

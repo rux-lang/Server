@@ -1,0 +1,303 @@
+---
+- name: Create observability service accounts
+  ansible.builtin.user:
+    name: "{{ item }}"
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+    password_lock: true
+  loop:
+    - prometheus
+    - alertmanager
+
+- name: Create observability directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /var/cache/rux-server, owner: root, group: root, mode: "0755" }
+    - { path: /etc/prometheus, owner: root, group: prometheus, mode: "0750" }
+    - { path: /var/lib/prometheus, owner: prometheus, group: prometheus, mode: "0750" }
+    - { path: /etc/alertmanager, owner: root, group: alertmanager, mode: "0750" }
+    - { path: /var/lib/alertmanager, owner: alertmanager, group: alertmanager, mode: "0750" }
+
+- name: Download the pinned Prometheus release
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/prometheus/releases/download/v{{ rux_prometheus_version }}/prometheus-{{ rux_prometheus_version }}.linux-amd64.tar.gz"
+    dest: "/var/cache/rux-server/prometheus-{{ rux_prometheus_version }}.linux-amd64.tar.gz"
+    checksum: "sha256:{{ rux_prometheus_checksum }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Extract the pinned Prometheus release
+  ansible.builtin.unarchive:
+    src: "/var/cache/rux-server/prometheus-{{ rux_prometheus_version }}.linux-amd64.tar.gz"
+    dest: /var/cache/rux-server
+    remote_src: true
+    creates: "/var/cache/rux-server/prometheus-{{ rux_prometheus_version }}.linux-amd64/prometheus"
+
+- name: Install Prometheus executables
+  ansible.builtin.copy:
+    src: "/var/cache/rux-server/prometheus-{{ rux_prometheus_version }}.linux-amd64/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - prometheus
+    - promtool
+  notify: Restart Prometheus
+
+- name: Download the pinned Alertmanager release
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/prometheus/alertmanager/releases/download/v{{ rux_alertmanager_version
+      }}/alertmanager-{{ rux_alertmanager_version }}.linux-amd64.tar.gz
+    dest: "/var/cache/rux-server/alertmanager-{{ rux_alertmanager_version }}.linux-amd64.tar.gz"
+    checksum: "sha256:{{ rux_alertmanager_checksum }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Extract the pinned Alertmanager release
+  ansible.builtin.unarchive:
+    src: "/var/cache/rux-server/alertmanager-{{ rux_alertmanager_version }}.linux-amd64.tar.gz"
+    dest: /var/cache/rux-server
+    remote_src: true
+    creates: "/var/cache/rux-server/alertmanager-{{ rux_alertmanager_version }}.linux-amd64/alertmanager"
+
+- name: Install Alertmanager executables
+  ansible.builtin.copy:
+    src: "/var/cache/rux-server/alertmanager-{{ rux_alertmanager_version }}.linux-amd64/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - alertmanager
+    - amtool
+  notify: Restart Alertmanager
+
+- name: Configure the Grafana repository signing key
+  ansible.builtin.get_url:
+    url: https://apt.grafana.com/gpg-full.key
+    dest: /usr/share/keyrings/grafana.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure the official stable Grafana repository
+  ansible.builtin.deb822_repository:
+    name: grafana
+    types: [deb]
+    uris: https://apt.grafana.com
+    suites: [stable]
+    components: [main]
+    architectures: [amd64]
+    signed_by: /usr/share/keyrings/grafana.asc
+    state: present
+
+- name: Install the pinned Grafana package
+  ansible.builtin.apt:
+    name: "grafana={{ rux_grafana_version }}"
+    state: present
+    update_cache: true
+
+- name: Hold the reviewed Grafana version
+  ansible.builtin.dpkg_selections:
+    name: grafana
+    selection: hold
+
+- name: Create Grafana provisioning directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: grafana
+    mode: "0750"
+  loop:
+    - /etc/grafana/provisioning/datasources
+    - /etc/grafana/provisioning/dashboards
+    - /var/lib/grafana/dashboards
+
+- name: Configure Prometheus
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: /etc/prometheus/prometheus.yml
+    owner: root
+    group: prometheus
+    mode: "0640"
+  notify: Validate and restart Prometheus
+
+- name: Install registry alert rules
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../observability/alerts.yml"
+    dest: /etc/prometheus/rux-alerts.yml
+    owner: root
+    group: prometheus
+    mode: "0640"
+  notify: Validate and restart Prometheus
+
+- name: Configure secret alert routing
+  ansible.builtin.template:
+    src: alertmanager.yml.j2
+    dest: /etc/alertmanager/alertmanager.yml
+    owner: root
+    group: alertmanager
+    mode: "0640"
+  no_log: true
+  notify: Validate and restart Alertmanager
+
+- name: Install Prometheus and Alertmanager systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.service.j2"
+    dest: "/etc/systemd/system/{{ item }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - prometheus
+    - alertmanager
+  notify: Reload systemd
+
+- name: Configure Grafana
+  ansible.builtin.template:
+    src: grafana.ini.j2
+    dest: /etc/grafana/grafana.ini
+    owner: root
+    group: grafana
+    mode: "0640"
+  no_log: true
+  notify: Restart Grafana
+
+- name: Store the Grafana administrator secret outside the main configuration
+  ansible.builtin.template:
+    src: grafana.env.j2
+    dest: /etc/grafana/rux-server.env
+    owner: root
+    group: grafana
+    mode: "0640"
+  no_log: true
+  notify:
+    - Reload systemd
+    - Restart Grafana
+
+- name: Create the Grafana service override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/grafana-server.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Load the Grafana secret environment
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/grafana-server.service.d/10-rux-server.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Service]
+      EnvironmentFile=/etc/grafana/rux-server.env
+  notify:
+    - Reload systemd
+    - Restart Grafana
+
+- name: Provision the production Prometheus datasource
+  ansible.builtin.template:
+    src: grafana-prometheus.yml.j2
+    dest: /etc/grafana/provisioning/datasources/prometheus.yml
+    owner: root
+    group: grafana
+    mode: "0640"
+  notify: Restart Grafana
+
+- name: Provision the server dashboard provider
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../observability/grafana/provisioning/dashboards/server.yml"
+    dest: /etc/grafana/provisioning/dashboards/server.yml
+    owner: root
+    group: grafana
+    mode: "0640"
+  notify: Restart Grafana
+
+- name: Provision the server dashboard
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../observability/grafana/dashboards/server-overview.json"
+    dest: /var/lib/grafana/dashboards/server-overview.json
+    owner: root
+    group: grafana
+    mode: "0640"
+  notify: Restart Grafana
+
+- name: Apply observability configuration before service startup
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable production observability services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - prometheus
+    - alertmanager
+    - grafana-server
+
+- name: Calculate the configured Grafana administrator credential marker
+  ansible.builtin.set_fact:
+    rux_grafana_password_checksum: "{{ rux_grafana_admin_password | hash('sha256') }}"
+  no_log: true
+
+- name: Read the applied Grafana administrator credential marker
+  ansible.builtin.slurp:
+    src: /etc/grafana/.admin-password.sha256
+  register: rux_grafana_password_marker
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Rotate the Grafana administrator credential when its secret changes
+  when: >-
+    rux_grafana_password_marker is failed or
+    (rux_grafana_password_marker.content | default('') | b64decode | trim)
+    != rux_grafana_password_checksum
+  no_log: true
+  block:
+    - name: Stop Grafana for its local credential update
+      ansible.builtin.systemd_service:
+        name: grafana-server
+        state: stopped
+
+    - name: Reset the Grafana administrator credential
+      ansible.builtin.command:
+        argv:
+          - /usr/share/grafana/bin/grafana
+          - cli
+          - --homepath
+          - /usr/share/grafana
+          - --config
+          - /etc/grafana/grafana.ini
+          - admin
+          - reset-admin-password
+          - --password-from-stdin
+        stdin: "{{ rux_grafana_admin_password }}"
+      changed_when: true
+
+    - name: Record the applied Grafana administrator credential
+      ansible.builtin.copy:
+        dest: /etc/grafana/.admin-password.sha256
+        content: "{{ rux_grafana_password_checksum }}\n"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Restart Grafana after its credential update
+      ansible.builtin.systemd_service:
+        name: grafana-server
+        state: started

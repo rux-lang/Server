@@ -1,0 +1,10 @@
+---
+- name: Remove the controller-side release fixture
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Remove the exact Molecule fixture directory
+      ansible.builtin.file:
+        path: /tmp/rux-server-molecule-release
+        state: absent

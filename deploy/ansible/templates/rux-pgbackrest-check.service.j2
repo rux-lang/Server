@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify Rux Server PostgreSQL backup and WAL repository
+After=postgresql.service network-online.target
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+ExecStart=/usr/local/libexec/rux-server/run-pgbackrest check

@@ -1,0 +1,27 @@
+---
+all:
+  hosts:
+    registry:
+      ansible_host: 203.0.113.10
+      ansible_user: root
+  vars:
+    rux_admin_user: rux-admin
+    rux_admin_authorized_keys:
+      - ssh-ed25519 AAAA_REPLACE_WITH_OPERATOR_KEY operator@example
+    rux_ssh_allowed_cidrs:
+      - 203.0.113.20/32
+
+    rux_api_address: api.rux-lang.dev
+    rux_allowed_web_origin: https://rux-lang.dev
+    rux_web_callback_url: https://rux-lang.dev/packages/-/auth/callback
+    rux_github_callback_url: https://api.rux-lang.dev/v1/auth/github/callback
+
+    rux_storage_endpoint: https://fra1.digitaloceanspaces.com
+    rux_storage_bucket: packages
+    rux_storage_region: fra1
+    rux_package_cdn_base_url: https://packages.fra1.cdn.digitaloceanspaces.com/
+
+    # Use a dedicated, versioned Space in a region other than the package Space.
+    rux_backup_endpoint: https://nyc3.digitaloceanspaces.com
+    rux_backup_bucket: rux-postgres-backups
+    rux_backup_region: nyc3

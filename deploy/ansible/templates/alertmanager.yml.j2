@@ -1,0 +1,28 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: warning
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - receiver: critical
+      matchers:
+        - severity="critical"
+      group_wait: 0s
+      repeat_interval: 1h
+    - receiver: warning
+      matchers:
+        - severity="warning"
+
+receivers:
+  - name: warning
+    webhook_configs:
+      - url: {{ rux_alert_warning_webhook_url | to_json }}
+        send_resolved: true
+  - name: critical
+    webhook_configs:
+      - url: {{ rux_alert_critical_webhook_url | to_json }}
+        send_resolved: true

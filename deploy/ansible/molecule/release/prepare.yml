@@ -1,0 +1,105 @@
+---
+- name: Build a controller-side release fixture
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    rux_fixture_root: /tmp/rux-server-molecule-release
+    rux_fixture_commit: "1111111111111111111111111111111111111111"
+  tasks:
+    - name: Remove an old release fixture
+      ansible.builtin.file:
+        path: "{{ rux_fixture_root }}"
+        state: absent
+
+    - name: Create release fixture directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ rux_fixture_root }}/root/bin"
+        - "{{ rux_fixture_root }}/root/migrations"
+
+    - name: Install the healthy fixture API
+      ansible.builtin.copy:
+        dest: "{{ rux_fixture_root }}/root/bin/rux-server"
+        mode: "0755"
+        content: |
+          #!/usr/bin/python3
+          import json
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == "/health/ready":
+                      body = {"status": "healthy", "checks": []}
+                  else:
+                      self.send_response(404)
+                      self.end_headers()
+                      return
+                  encoded = json.dumps(body).encode()
+                  self.send_response(200)
+                  self.send_header("Content-Type", "application/json")
+                  self.send_header("Content-Length", str(len(encoded)))
+                  self.end_headers()
+                  self.wfile.write(encoded)
+
+              def log_message(self, *_args):
+                  return
+
+          HTTPServer(("127.0.0.1", 8080), Handler).serve_forever()
+
+    - name: Install the fixture SQLx executable
+      ansible.builtin.copy:
+        dest: "{{ rux_fixture_root }}/root/bin/sqlx"
+        mode: "0755"
+        content: |
+          #!/usr/bin/sh
+          case "$*" in
+            *"migrate run"*) printf 'Applied fixture migration\n' ;;
+            *) printf 'fixture migration state is current\n' ;;
+          esac
+
+    - name: Install fixture migrations
+      ansible.builtin.copy:
+        dest: "{{ item.path }}"
+        mode: "0644"
+        content: "{{ item.content }}"
+      loop:
+        - { path: "{{ rux_fixture_root }}/root/migrations/20260803000000_fixture.up.sql", content: "SELECT 1;\n" }
+        - { path: "{{ rux_fixture_root }}/root/migrations/20260803000000_fixture.down.sql", content: "SELECT 1;\n" }
+
+    - name: Install the fixture release manifest
+      ansible.builtin.copy:
+        dest: "{{ rux_fixture_root }}/root/release.json"
+        mode: "0644"
+        content: |
+          {
+            "schema_version": 1,
+            "tag": "v0.1.0",
+            "version": "0.1.0",
+            "commit_sha": "{{ rux_fixture_commit }}",
+            "target": "x86_64-unknown-linux-gnu",
+            "source_date_epoch": 1785715200
+          }
+
+    - name: Calculate fixture file checksums
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail && find bin migrations -type f -print0 |
+          sort -z | xargs -0 sha256sum > SHA256SUMS
+        chdir: "{{ rux_fixture_root }}/root"
+        executable: /usr/bin/bash
+      changed_when: true
+
+    - name: Build the release fixture archive
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/tar
+          - -czf
+          - "{{ rux_fixture_root }}/release.tar.gz"
+          - -C
+          - "{{ rux_fixture_root }}/root"
+          - .
+      changed_when: true

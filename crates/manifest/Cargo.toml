@@ -1,0 +1,17 @@
+[package]
+name = "rux-manifest"
+description = "Versioned Rux.toml parsing and validation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rux-domain.workspace = true
+spdx.workspace = true
+toml_edit.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

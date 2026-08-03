@@ -1,0 +1,106 @@
+---
+- name: Build an unhealthy candidate release fixture
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    rux_fixture_root: /tmp/rux-server-molecule-release
+    rux_unhealthy_commit: "2222222222222222222222222222222222222222"
+  tasks:
+    - name: Replace the fixture API with an unhealthy executable
+      ansible.builtin.copy:
+        dest: "{{ rux_fixture_root }}/root/bin/rux-server"
+        mode: "0755"
+        content: |
+          #!/usr/bin/sh
+          exit 1
+
+    - name: Replace the fixture release manifest
+      ansible.builtin.copy:
+        dest: "{{ rux_fixture_root }}/root/release.json"
+        mode: "0644"
+        content: |
+          {
+            "schema_version": 1,
+            "tag": "v0.1.1",
+            "version": "0.1.1",
+            "commit_sha": "{{ rux_unhealthy_commit }}",
+            "target": "x86_64-unknown-linux-gnu",
+            "source_date_epoch": 1785715300
+          }
+
+    - name: Recalculate unhealthy fixture checksums
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail && find bin migrations -type f -print0 |
+          sort -z | xargs -0 sha256sum > SHA256SUMS
+        chdir: "{{ rux_fixture_root }}/root"
+        executable: /usr/bin/bash
+      changed_when: true
+
+    - name: Build the unhealthy release archive
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/tar
+          - -czf
+          - "{{ rux_fixture_root }}/unhealthy-release.tar.gz"
+          - -C
+          - "{{ rux_fixture_root }}/root"
+          - .
+      changed_when: true
+
+    - name: Calculate the unhealthy archive checksum
+      ansible.builtin.stat:
+        path: "{{ rux_fixture_root }}/unhealthy-release.tar.gz"
+        checksum_algorithm: sha256
+      register: rux_unhealthy_archive
+
+    - name: Require unhealthy promotion to fail after restoring current
+      ansible.builtin.command:
+        argv:
+          - ansible-playbook
+          - --inventory
+          - "{{ lookup('env', 'MOLECULE_INVENTORY_FILE') }}"
+          - "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/release.yml"
+          - --extra-vars
+          - "rux_release_archive={{ rux_fixture_root }}/unhealthy-release.tar.gz"
+          - --extra-vars
+          - "rux_release_sha256={{ rux_unhealthy_archive.stat.checksum }}"
+          - --extra-vars
+          - rux_migrations_approved=true
+          - --extra-vars
+          - rux_release_verify_public=false
+          - --extra-vars
+          - rux_release_health_retries=2
+          - --extra-vars
+          - rux_release_health_delay_seconds=1
+      environment:
+        ANSIBLE_CONFIG: "{{ lookup('env', 'ANSIBLE_CONFIG') }}"
+      register: rux_unhealthy_deployment
+      changed_when: false
+      failed_when: rux_unhealthy_deployment.rc == 0
+
+- name: Verify automatic restoration after unhealthy promotion
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Inspect current after the rejected candidate
+      ansible.builtin.stat:
+        path: /srv/rux-server/current
+        follow: false
+      register: rux_restored_current
+
+    - name: Check restored release readiness
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/health/ready
+        status_code: 200
+        return_content: true
+      register: rux_restored_ready
+
+    - name: Assert the prior release was restored
+      ansible.builtin.assert:
+        that:
+          - rux_restored_current.stat.islnk
+          - rux_restored_current.stat.lnk_source == '/srv/rux-server/releases/1111111111111111111111111111111111111111'
+          - rux_restored_ready.json.status == 'healthy'
