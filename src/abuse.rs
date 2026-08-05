@@ -31,11 +31,14 @@ pub struct AbuseConfig {
     pub trusted_proxy_cidrs: Arc<[IpNet]>,
     pub request_timeout: Duration,
     pub publication_timeout: Duration,
+    pub playground_timeout: Duration,
     pub read: RateLimit,
     pub security: RateLimit,
     pub mutation: RateLimit,
     pub publication: RateLimit,
+    pub playground: RateLimit,
     pub upload_max_concurrency: usize,
+    pub playground_max_concurrency: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -44,6 +47,7 @@ pub enum RateTier {
     Security,
     Mutation,
     Publication,
+    Playground,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -86,7 +90,9 @@ pub struct AbuseControls {
     security: Arc<LimiterConfig>,
     mutation: Arc<LimiterConfig>,
     publication: Arc<LimiterConfig>,
+    playground: Arc<LimiterConfig>,
     upload_slots: Arc<tokio::sync::Semaphore>,
+    playground_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl fmt::Debug for AbuseControls {
@@ -111,7 +117,11 @@ impl AbuseControls {
             security: limiter(config.security),
             mutation: limiter(config.mutation),
             publication: limiter(config.publication),
+            playground: limiter(config.playground),
             upload_slots: Arc::new(tokio::sync::Semaphore::new(config.upload_max_concurrency)),
+            playground_slots: Arc::new(tokio::sync::Semaphore::new(
+                config.playground_max_concurrency,
+            )),
             config,
         }
     }
@@ -123,6 +133,7 @@ impl AbuseControls {
             RateTier::Security => self.security.clone(),
             RateTier::Mutation => self.mutation.clone(),
             RateTier::Publication => self.publication.clone(),
+            RateTier::Playground => self.playground.clone(),
         };
         GovernorLayer::new(config).error_handler(rate_limit_error)
     }
@@ -142,6 +153,25 @@ impl AbuseControls {
                 enforce_timeout,
             ))
             .layer(self.rate_limit_layer(RateTier::Publication))
+    }
+
+    /// Protects the playground, which executes submitted code.
+    ///
+    /// Mirrors [`AbuseControls::protect_publication`]: an admission semaphore
+    /// so a burst cannot occupy every sandbox slot, a timeout longer than an
+    /// ordinary request because a run compiles and executes, and a tier of its
+    /// own so playground traffic cannot exhaust the read budget.
+    pub fn protect_playground(&self, router: Router) -> Router {
+        router
+            .layer(middleware::from_fn_with_state(
+                self.playground_concurrency(),
+                limit_playground_concurrency,
+            ))
+            .layer(middleware::from_fn_with_state(
+                RequestTimeout(self.playground_timeout()),
+                enforce_timeout,
+            ))
+            .layer(self.rate_limit_layer(RateTier::Playground))
     }
 
     pub fn timeout_only(&self, router: Router) -> Router {
@@ -171,6 +201,11 @@ impl AbuseControls {
     }
 
     #[must_use]
+    pub const fn playground_timeout(&self) -> Duration {
+        self.config.playground_timeout
+    }
+
+    #[must_use]
     pub fn trusted_proxies(&self) -> TrustedProxies {
         TrustedProxies(self.config.trusted_proxy_cidrs.clone())
     }
@@ -180,11 +215,17 @@ impl AbuseControls {
         UploadConcurrency(self.upload_slots.clone())
     }
 
+    #[must_use]
+    pub fn playground_concurrency(&self) -> PlaygroundConcurrency {
+        PlaygroundConcurrency(self.playground_slots.clone())
+    }
+
     pub fn prune_rate_limiters(&self) {
         self.read.limiter().retain_recent();
         self.security.limiter().retain_recent();
         self.mutation.limiter().retain_recent();
         self.publication.limiter().retain_recent();
+        self.playground.limiter().retain_recent();
     }
 }
 
@@ -337,6 +378,36 @@ pub async fn limit_upload_concurrency(
     response
 }
 
+#[derive(Clone, Debug)]
+pub struct PlaygroundConcurrency(Arc<tokio::sync::Semaphore>);
+
+/// Refuses a run rather than queueing it when every admission slot is taken.
+///
+/// The sandbox daemon has an admission limit of its own; this one keeps a burst
+/// from occupying API request slots while it waits for a sandbox that is
+/// already full.
+pub async fn limit_playground_concurrency(
+    State(limit): State<PlaygroundConcurrency>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Ok(permit) = limit.0.clone().try_acquire_owned() else {
+        let mut response = Problem::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "playground_unavailable",
+            "The playground is temporarily unavailable",
+        )
+        .into_response();
+        response
+            .headers_mut()
+            .insert(RETRY_AFTER, HeaderValue::from_static("1"));
+        return response;
+    };
+    let response = next.run(request).await;
+    drop(permit);
+    response
+}
+
 pub async fn discard_supplied_request_id(mut request: Request, next: Next) -> Response {
     request.headers_mut().remove("x-request-id");
     next.run(request).await
@@ -354,7 +425,11 @@ mod tests {
     use super::*;
 
     fn controls(request_timeout: Duration, upload_max_concurrency: usize) -> AbuseControls {
-        AbuseControls::new(AbuseConfig {
+        AbuseControls::new(config_for(request_timeout, upload_max_concurrency))
+    }
+
+    fn config_for(request_timeout: Duration, upload_max_concurrency: usize) -> AbuseConfig {
+        AbuseConfig {
             trusted_proxy_cidrs: Arc::from([]),
             request_timeout,
             publication_timeout: request_timeout,
@@ -374,8 +449,35 @@ mod tests {
                 per_minute: 60,
                 burst: 2,
             },
+            playground: RateLimit {
+                per_minute: 60,
+                burst: 2,
+            },
+            playground_timeout: request_timeout,
             upload_max_concurrency,
-        })
+            playground_max_concurrency: upload_max_concurrency,
+        }
+    }
+
+    fn keyed_request_with_method(uri: &str, address: &str, method: &str) -> HttpRequest<Body> {
+        let mut request = HttpRequest::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ClientKey::new(address.parse().unwrap()));
+        request
+    }
+
+    async fn problem_body(response: axum::response::Response) -> serde_json::Value {
+        serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap()
     }
 
     fn keyed_request(uri: &str, address: &str) -> HttpRequest<Body> {
@@ -537,6 +639,92 @@ mod tests {
             first.await.unwrap().unwrap().status(),
             StatusCode::NO_CONTENT
         );
+    }
+
+    #[tokio::test]
+    async fn saturated_playground_admission_fails_without_waiting() {
+        let controls = controls(Duration::from_secs(1), 1);
+        let concurrency = controls.playground_concurrency();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let handler_gate = gate.clone();
+        let app = Router::new()
+            .route(
+                "/",
+                post(move || {
+                    let gate = handler_gate.clone();
+                    async move {
+                        gate.notified().await;
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            )
+            .layer(middleware::from_fn_with_state(
+                concurrency.clone(),
+                limit_playground_concurrency,
+            ));
+
+        let first = tokio::spawn(
+            app.clone().oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+        );
+        while concurrency.0.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+        let second = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Refused immediately rather than queued behind a sandbox that is
+        // already full, and with the playground's own problem code.
+        assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(second.headers()[RETRY_AFTER], "1");
+        assert_eq!(problem_body(second).await["code"], "playground_unavailable");
+        gate.notify_one();
+        assert_eq!(
+            first.await.unwrap().unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+    }
+
+    #[tokio::test]
+    async fn the_playground_tier_has_a_budget_of_its_own() {
+        // Exhausting the playground tier must not touch the read budget, and a
+        // refusal must carry the shared rate-limit contract.
+        let controls = AbuseControls::new(AbuseConfig {
+            playground: RateLimit {
+                per_minute: 1,
+                burst: 1,
+            },
+            ..config_for(Duration::from_secs(1), 1)
+        });
+        let app = controls.protect_playground(
+            Router::new().route("/", post(|| async { StatusCode::NO_CONTENT })),
+        );
+
+        let first = app
+            .clone()
+            .oneshot(keyed_request_with_method("/", "203.0.113.7", "POST"))
+            .await
+            .unwrap();
+        let second = app
+            .oneshot(keyed_request_with_method("/", "203.0.113.7", "POST"))
+            .await
+            .unwrap();
+
+        assert_eq!(first.status(), StatusCode::NO_CONTENT);
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]

@@ -24,6 +24,26 @@ pub struct ApiConfig {
     pub observability: ObservabilityConfig,
     pub abuse: AbuseConfig,
     pub uploads: UploadConfig,
+    pub playground: PlaygroundConfig,
+}
+
+/// How the API reaches the playground sandbox, and whether it does at all.
+///
+/// The rate limit and admission slots live in [`AbuseConfig`] with the other
+/// tiers; this carries what is specific to the playground itself.
+#[derive(Clone, Debug)]
+pub struct PlaygroundConfig {
+    /// Whether the playground routes are mounted at all. When false the
+    /// fallback answers, so the endpoints are a 404 rather than a 503.
+    pub enabled: bool,
+    /// Unix socket the sandbox daemon listens on.
+    pub socket_path: PathBuf,
+    /// Deadline for one exchange with the daemon.
+    pub timeout: StdDuration,
+    /// Concurrent runs the API will admit.
+    pub max_concurrency: usize,
+    /// Per-client request budget for the playground tier.
+    pub rate_limit: RateLimit,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -66,6 +86,17 @@ impl ApiConfig {
             "RUX_GITHUB_CALLBACK_URL",
             "http://localhost:8080/v1/auth/github/callback",
         ))?;
+        // Parsed before the abuse tiers, which cross-check the playground
+        // timeout against the ordinary request timeout.
+        let playground = parse_playground(
+            &value("RUX_PLAYGROUND_ENABLED", "false"),
+            &value("RUX_PLAYGROUND_SOCKET", "/run/rux-playground/run.sock"),
+            &value("RUX_PLAYGROUND_TIMEOUT_SECONDS", "30"),
+            &value("RUX_PLAYGROUND_MAX_CONCURRENCY", "2"),
+            &value("RUX_RATE_LIMIT_PLAYGROUND_PER_MINUTE", "10"),
+            &value("RUX_RATE_LIMIT_PLAYGROUND_BURST", "4"),
+        )?;
+
         Ok(Self {
             bind_address: value("RUX_BIND_ADDRESS", "127.0.0.1:8080").parse()?,
             allowed_web_origin: allowed_web_origin.origin().ascii_serialization(),
@@ -113,6 +144,7 @@ impl ApiConfig {
                 &value("RUX_RATE_LIMIT_PUBLICATION_PER_MINUTE", "6"),
                 &value("RUX_RATE_LIMIT_PUBLICATION_BURST", "2"),
                 &value("RUX_UPLOAD_MAX_CONCURRENCY", "8"),
+                &playground,
             )?,
             uploads: parse_uploads(
                 &value("RUX_UPLOAD_TEMPORARY_DIRECTORY", ""),
@@ -121,6 +153,7 @@ impl ApiConfig {
                     &DEFAULT_UPLOAD_TEMPORARY_CAPACITY_BYTES.to_string(),
                 ),
             )?,
+            playground,
         })
     }
 }
@@ -139,6 +172,7 @@ fn parse_abuse(
     publication_per_minute: &str,
     publication_burst: &str,
     upload_max_concurrency: &str,
+    playground: &PlaygroundConfig,
 ) -> Result<AbuseConfig, Box<dyn std::error::Error>> {
     let request_timeout = bounded_u64(
         "RUX_REQUEST_TIMEOUT_SECONDS",
@@ -152,14 +186,26 @@ fn parse_abuse(
         request_timeout,
         600,
     )?;
+    // A run compiles and executes, so it needs at least as long as an ordinary
+    // request; anything shorter would cut off runs the sandbox would finish.
+    if playground.timeout < StdDuration::from_secs(request_timeout) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RUX_PLAYGROUND_TIMEOUT_SECONDS must be at least RUX_REQUEST_TIMEOUT_SECONDS",
+        )
+        .into());
+    }
+
     Ok(AbuseConfig {
         trusted_proxy_cidrs: parse_cidrs(trusted_proxy_cidrs)?,
         request_timeout: StdDuration::from_secs(request_timeout),
         publication_timeout: StdDuration::from_secs(publication_timeout),
+        playground_timeout: playground.timeout,
         read: parse_rate_limit("READ", read_per_minute, read_burst)?,
         security: parse_rate_limit("SECURITY", security_per_minute, security_burst)?,
         mutation: parse_rate_limit("MUTATION", mutation_per_minute, mutation_burst)?,
         publication: parse_rate_limit("PUBLICATION", publication_per_minute, publication_burst)?,
+        playground: playground.rate_limit,
         upload_max_concurrency: usize::try_from(bounded_u64(
             "RUX_UPLOAD_MAX_CONCURRENCY",
             upload_max_concurrency,
@@ -167,6 +213,53 @@ fn parse_abuse(
             64,
         )?)
         .expect("the configured upper bound fits usize"),
+        playground_max_concurrency: playground.max_concurrency,
+    })
+}
+
+fn parse_playground(
+    enabled: &str,
+    socket: &str,
+    timeout_seconds: &str,
+    max_concurrency: &str,
+    per_minute: &str,
+    burst: &str,
+) -> Result<PlaygroundConfig, Box<dyn std::error::Error>> {
+    if socket.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RUX_PLAYGROUND_SOCKET must not be empty",
+        )
+        .into());
+    }
+
+    Ok(PlaygroundConfig {
+        enabled: parse_flag("RUX_PLAYGROUND_ENABLED", enabled)?,
+        socket_path: PathBuf::from(socket.trim()),
+        timeout: StdDuration::from_secs(bounded_u64(
+            "RUX_PLAYGROUND_TIMEOUT_SECONDS",
+            timeout_seconds,
+            1,
+            120,
+        )?),
+        max_concurrency: usize::try_from(bounded_u64(
+            "RUX_PLAYGROUND_MAX_CONCURRENCY",
+            max_concurrency,
+            1,
+            16,
+        )?)
+        .expect("the configured upper bound fits usize"),
+        rate_limit: parse_rate_limit("PLAYGROUND", per_minute, burst)?,
+    })
+}
+
+fn parse_flag(name: &str, value: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    value.trim().parse::<bool>().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} must be true or false"),
+        )
+        .into()
     })
 }
 
@@ -518,6 +611,7 @@ mod tests {
             "6",
             "2",
             "8",
+            &playground_defaults(),
         )
         .expect("default abuse controls should parse");
 
@@ -539,6 +633,93 @@ mod tests {
             }
         );
         assert_eq!(config.upload_max_concurrency, 8);
+        assert_eq!(config.playground_timeout, StdDuration::from_secs(30));
+        assert_eq!(config.playground_max_concurrency, 2);
+        assert_eq!(
+            config.playground,
+            RateLimit {
+                per_minute: 10,
+                burst: 4
+            }
+        );
+    }
+
+    fn playground_defaults() -> PlaygroundConfig {
+        parse_playground("true", "/run/rux-playground/run.sock", "30", "2", "10", "4")
+            .expect("playground defaults should parse")
+    }
+
+    #[test]
+    fn playground_defaults_are_off_and_conservatively_bounded() {
+        let config = playground_defaults();
+
+        assert!(config.enabled);
+        assert_eq!(
+            config.socket_path,
+            PathBuf::from("/run/rux-playground/run.sock")
+        );
+        assert_eq!(config.timeout, StdDuration::from_secs(30));
+        assert_eq!(config.max_concurrency, 2);
+        assert_eq!(
+            config.rate_limit,
+            RateLimit {
+                per_minute: 10,
+                burst: 4
+            }
+        );
+    }
+
+    #[test]
+    fn every_playground_knob_is_bounded_rather_than_trusted() {
+        let parse = |enabled: &str,
+                     socket: &str,
+                     timeout: &str,
+                     concurrency: &str,
+                     per_minute: &str,
+                     burst: &str| {
+            parse_playground(enabled, socket, timeout, concurrency, per_minute, burst)
+        };
+
+        // The flag must be a Boolean, not merely non-empty.
+        assert!(parse("yes", "/s.sock", "30", "2", "10", "4").is_err());
+        assert!(parse("", "/s.sock", "30", "2", "10", "4").is_err());
+        assert!(parse("false", "/s.sock", "30", "2", "10", "4").is_ok());
+        // An empty socket path would silently bind nothing.
+        assert!(parse("true", "   ", "30", "2", "10", "4").is_err());
+        // Timeout, admission slots, and the rate limit all have ceilings.
+        assert!(parse("true", "/s.sock", "0", "2", "10", "4").is_err());
+        assert!(parse("true", "/s.sock", "121", "2", "10", "4").is_err());
+        assert!(parse("true", "/s.sock", "30", "0", "10", "4").is_err());
+        assert!(parse("true", "/s.sock", "30", "17", "10", "4").is_err());
+        assert!(parse("true", "/s.sock", "30", "2", "0", "4").is_err());
+        // A burst larger than the per-minute budget is nonsense.
+        assert!(parse("true", "/s.sock", "30", "2", "10", "11").is_err());
+    }
+
+    #[test]
+    fn a_playground_timeout_below_the_request_timeout_is_refused() {
+        // A run compiles and executes, so it can never need less time than an
+        // ordinary request is allowed.
+        let short = parse_playground("true", "/s.sock", "10", "2", "10", "4")
+            .expect("a short playground timeout parses on its own");
+
+        let outcome = parse_abuse(
+            "127.0.0.0/8",
+            "30",
+            "120",
+            "120",
+            "60",
+            "30",
+            "10",
+            "60",
+            "20",
+            "6",
+            "2",
+            "8",
+            &short,
+        );
+
+        assert!(outcome.is_err());
     }
 
     #[test]
@@ -557,6 +738,7 @@ mod tests {
                 "6",
                 "2",
                 "8",
+                &playground_defaults(),
             )
         };
         assert!(parse("not-a-network", "30", "120", "60").is_err());

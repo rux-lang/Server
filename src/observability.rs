@@ -135,6 +135,10 @@ pub struct Metrics {
     cleanup_duration: Histogram<f64>,
     cleanup_objects: Counter<u64>,
     cleanup_last_success: Gauge<f64>,
+    playground_runs: Counter<u64>,
+    playground_duration: Histogram<f64>,
+    playground_active: UpDownCounter<i64>,
+    playground_available: Gauge<f64>,
 }
 
 impl Metrics {
@@ -197,6 +201,26 @@ impl Metrics {
                 .with_description("Unix time of the most recent successful cleanup sweep")
                 .with_unit("s")
                 .build(),
+            playground_runs: meter
+                .u64_counter("rux_playground_runs")
+                .with_description("Completed playground runs")
+                .build(),
+            playground_duration: meter
+                .f64_histogram("rux_playground_duration")
+                .with_description("Playground run duration")
+                .with_unit("s")
+                // A run is bounded by its compile and execute timeouts, so the
+                // interesting range is seconds rather than milliseconds.
+                .with_boundaries(vec![0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0])
+                .build(),
+            playground_active: meter
+                .i64_up_down_counter("rux_playground_active")
+                .with_description("Playground runs currently in flight")
+                .build(),
+            playground_available: meter
+                .f64_gauge("rux_playground_available")
+                .with_description("Whether the playground sandbox is answering")
+                .build(),
         }
     }
 
@@ -239,6 +263,55 @@ impl Metrics {
         self.cleanup_runs.add(1, &labels);
         self.cleanup_duration
             .record(duration.as_secs_f64(), &labels);
+    }
+
+    /// Marks a playground run as started, and returns the guard that ends it.
+    ///
+    /// The guard is what keeps `rux_playground_active` honest: it decrements on
+    /// every exit path, including a cancelled request.
+    #[must_use]
+    pub fn playground_run_started(&self) -> PlaygroundRunInFlight {
+        self.playground_active.add(1, &[]);
+        PlaygroundRunInFlight {
+            metrics: self.clone(),
+        }
+    }
+
+    /// Records one finished playground run.
+    ///
+    /// `mode` and `outcome` are fixed vocabularies. Nothing derived from the
+    /// submission or the caller is ever a label, so the series cannot be made
+    /// to grow without bound and cannot carry submitted content.
+    pub fn record_playground_run(
+        &self,
+        mode: &'static str,
+        outcome: &'static str,
+        duration: Duration,
+    ) {
+        let labels = [
+            KeyValue::new("mode", mode),
+            KeyValue::new("outcome", outcome),
+        ];
+        self.playground_runs.add(1, &labels);
+        self.playground_duration
+            .record(duration.as_secs_f64(), &labels);
+    }
+
+    /// Records whether the sandbox answered its most recent availability probe.
+    pub fn record_playground_available(&self, available: bool) {
+        self.playground_available
+            .record(if available { 1.0 } else { 0.0 }, &[]);
+    }
+}
+
+/// Decrements the in-flight playground gauge when dropped.
+pub struct PlaygroundRunInFlight {
+    metrics: Metrics,
+}
+
+impl Drop for PlaygroundRunInFlight {
+    fn drop(&mut self) {
+        self.metrics.playground_active.add(-1, &[]);
     }
 }
 

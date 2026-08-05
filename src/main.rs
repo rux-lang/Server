@@ -14,8 +14,8 @@ use rux_application::{
     AccountLifecycleService, ApiTokenService, ApiTokens, Authentication, AuthenticationService,
     DashboardService, DependencyProbe, DiscoveryService, DownloadService, Downloads,
     NamespaceService, Namespaces, OrphanCleanupService, PackageMetadataService,
-    PackageSearchService, PublicationService, PublicationWorkflow, Publications,
-    ResolverIndexService, TokenAuthorizer, YankService, Yanks,
+    PackageSearchService, PlaygroundExecution, PublicationService, PublicationWorkflow,
+    Publications, ResolverIndexService, TokenAuthorizer, YankService, Yanks,
 };
 use rux_infrastructure::{GitHubOAuthClient, Infrastructure, OsCredentialGenerator, SystemClock};
 use tokio::sync::watch;
@@ -37,6 +37,10 @@ struct Runtime {
     cleanup: Arc<OrphanCleanupService>,
     metrics: Metrics,
     abuse: rux_server::abuse::AbuseControls,
+    /// Present only when the playground is enabled; drives its availability
+    /// gauge. Deliberately not part of `probe`, so a stopped sandbox cannot
+    /// fail readiness and pull the registry out of rotation.
+    playground: Option<Arc<dyn PlaygroundExecution>>,
 }
 
 enum Exit {
@@ -172,12 +176,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         rux_server::abuse::RateTier::Read,
     );
-    let app = Router::new()
+    let mut app = Router::new()
         .merge(health_routes)
         .merge(security_routes)
         .merge(mutation_routes)
         .merge(publication_routes)
-        .merge(read_routes)
+        .merge(read_routes);
+
+    // Merged only when enabled, so a deployment without a sandbox answers 404
+    // from the fallback rather than advertising an endpoint that always fails.
+    let mut playground_probe: Option<Arc<dyn PlaygroundExecution>> = None;
+    if config.playground.enabled {
+        let playground: Arc<dyn rux_application::PlaygroundExecution> =
+            Arc::new(rux_application::PlaygroundService::new(
+                Arc::new(rux_infrastructure::UnixSocketPlayground::new(
+                    config.playground.socket_path.clone(),
+                    config.playground.timeout,
+                )),
+                // The daemon is authoritative for the limits it reports; this
+                // is only the local guard that keeps an oversized submission
+                // from occupying a socket, and it mirrors the same envelope.
+                rux_application::PlaygroundLimits::default(),
+            ));
+        app = app.merge(abuse.protect_playground(rux_server::playground::router(
+            Arc::clone(&playground),
+            web_origin.clone(),
+            metrics.clone(),
+        )));
+        playground_probe = Some(playground);
+    }
+
+    let app = app
         .merge(fallback_routes)
         .layer(middleware::from_fn_with_state(
             abuse.trusted_proxies(),
@@ -216,11 +245,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cleanup,
             metrics,
             abuse,
+            playground: playground_probe,
         },
     )
     .await;
     telemetry.shutdown();
     result
+}
+
+/// Keeps `rux_playground_available` current by asking the sandbox for its limits.
+///
+/// This is the API-side availability signal, and it is deliberately outside the
+/// readiness aggregate: a stopped sandbox is a degraded playground, not an
+/// unhealthy registry, and must not take the registry out of rotation.
+async fn watch_playground_availability(
+    playground: Arc<dyn PlaygroundExecution>,
+    metrics: Metrics,
+    interval: Duration,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {
+                metrics.record_playground_available(playground.limits().await.is_ok());
+            }
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 async fn serve(
@@ -237,6 +294,14 @@ async fn serve(
         runtime.cleanup_interval,
         shutdown_receiver.clone(),
     ));
+    let playground_task = runtime.playground.map(|playground| {
+        tokio::spawn(watch_playground_availability(
+            playground,
+            runtime.metrics.clone(),
+            runtime.dependency_probe_interval,
+            shutdown_receiver.clone(),
+        ))
+    });
     let dependency_task = tokio::spawn(rux_server::observability::run_dependency_monitor(
         runtime.probe,
         runtime.metrics,
@@ -291,6 +356,9 @@ async fn serve(
             Ok(())
         }
     };
+    if let Some(playground_task) = playground_task {
+        playground_task.await?;
+    }
     cleanup_task.await?;
     dependency_task.await?;
     rate_limit_pruner.await?;

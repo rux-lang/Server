@@ -43,6 +43,8 @@ use crate::contract::{Problem, ProblemResponse, ValidationError};
         crate::metadata::package_summary,
         crate::metadata::package_version,
         crate::search::search_packages,
+        crate::playground::run_playground,
+        crate::playground::playground_limits,
         crate::discovery::package_dependents,
         crate::discovery::keywords,
         crate::discovery::package_versions,
@@ -92,6 +94,13 @@ use crate::contract::{Problem, ProblemResponse, ValidationError};
         crate::search::PackageSearchDocument,
         crate::search::SearchPageMeta,
         crate::search::PackageSearchResponse,
+        crate::playground::PlaygroundModeDocument,
+        crate::playground::PlaygroundProfileDocument,
+        crate::playground::PlaygroundRunRequest,
+        crate::playground::PlaygroundRunDocument,
+        crate::playground::PlaygroundBuildDocument,
+        crate::playground::PlaygroundProgramDocument,
+        crate::playground::PlaygroundLimitsDocument,
         crate::discovery::DiscoveryPageMeta,
         crate::discovery::DependentRequirementDocument,
         crate::discovery::DependentPackageDocument,
@@ -274,6 +283,7 @@ mod tests {
         assert_resolver_contract(&document);
         assert_metadata_contract(&document);
         assert_search_contract(&document);
+        assert_playground_contract(&document);
         assert_discovery_contract(&document);
         assert_yank_contract(&document);
         assert_download_contract(&document);
@@ -466,6 +476,44 @@ mod tests {
             for status in ["404", "422", "503"] {
                 assert!(operation["responses"].get(status).is_some());
             }
+        }
+    }
+
+    fn assert_playground_contract(document: &Value) {
+        let run = &document["paths"]["/playground/run"]["post"];
+        assert!(
+            run.is_object(),
+            "the playground run path should be published"
+        );
+        for status in ["200", "403", "422", "503", "504"] {
+            assert!(
+                run["responses"].get(status).is_some(),
+                "missing playground run response {status}"
+            );
+        }
+
+        let limits = &document["paths"]["/playground/limits"]["get"];
+        assert!(
+            limits.is_object(),
+            "the playground limits path should be published"
+        );
+        assert!(limits["responses"].get("200").is_some());
+
+        // Every document the endpoints name must resolve, or the contract
+        // publishes a dangling reference.
+        for schema in [
+            "PlaygroundRunRequest",
+            "PlaygroundRunDocument",
+            "PlaygroundBuildDocument",
+            "PlaygroundProgramDocument",
+            "PlaygroundLimitsDocument",
+            "PlaygroundModeDocument",
+            "PlaygroundProfileDocument",
+        ] {
+            assert!(
+                document["components"]["schemas"].get(schema).is_some(),
+                "missing playground schema {schema}"
+            );
         }
     }
 

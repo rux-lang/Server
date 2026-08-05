@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{DefaultBodyLimit, State};
@@ -16,6 +17,7 @@ use utoipa::ToSchema;
 
 use crate::auth::origin_matches;
 use crate::contract::{DataEnvelope, Problem, ProblemResponse, ValidationError};
+use crate::observability::Metrics;
 
 /// Largest accepted request body.
 ///
@@ -28,9 +30,19 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 pub(crate) struct PlaygroundState {
     playground: Arc<dyn PlaygroundExecution>,
     allowed_web_origin: String,
+    metrics: Metrics,
 }
 
-pub fn router(playground: Arc<dyn PlaygroundExecution>, allowed_web_origin: String) -> Router {
+/// Builds the playground routes.
+///
+/// `metrics` is a parameter rather than a layer because the mode and the
+/// outcome of a run are only known inside the handler, and they are the two
+/// labels that make the instrument useful.
+pub fn router(
+    playground: Arc<dyn PlaygroundExecution>,
+    allowed_web_origin: String,
+    metrics: Metrics,
+) -> Router {
     Router::new()
         .route("/v1/playground/run", post(run_playground))
         .route("/v1/playground/limits", get(playground_limits))
@@ -38,6 +50,7 @@ pub fn router(playground: Arc<dyn PlaygroundExecution>, allowed_web_origin: Stri
         .with_state(PlaygroundState {
             playground,
             allowed_web_origin,
+            metrics,
         })
 }
 
@@ -154,9 +167,45 @@ pub(crate) async fn run_playground(
         .into_response();
     };
 
-    match state.playground.execute(to_run(payload)).await {
+    let run = to_run(payload);
+    let mode = mode_label(run.mode);
+    let started = Instant::now();
+    // Dropped on every exit path, including a cancelled request, so the
+    // in-flight gauge cannot drift upward.
+    let _in_flight = state.metrics.playground_run_started();
+
+    let outcome = state.playground.execute(run).await;
+    let label = match &outcome {
+        Ok(result) if result.build.success => "succeeded",
+        Ok(_) => "build_failed",
+        Err(error) => outcome_label(error.kind()),
+    };
+    state
+        .metrics
+        .record_playground_run(mode, label, started.elapsed());
+
+    match outcome {
         Ok(result) => Json(DataEnvelope::new(run_document(result))).into_response(),
         Err(error) => playground_problem(&error),
+    }
+}
+
+/// Fixed label for the requested mode.
+const fn mode_label(mode: PlaygroundMode) -> &'static str {
+    match mode {
+        PlaygroundMode::Run => "run",
+        PlaygroundMode::Build => "build",
+        PlaygroundMode::Fmt => "fmt",
+    }
+}
+
+/// Fixed label for how a run ended.
+const fn outcome_label(kind: PlaygroundErrorKind) -> &'static str {
+    match kind {
+        PlaygroundErrorKind::InvalidRequest => "rejected",
+        PlaygroundErrorKind::Unavailable => "unavailable",
+        PlaygroundErrorKind::Timeout => "timed_out",
+        PlaygroundErrorKind::Internal => "internal",
     }
 }
 
@@ -361,7 +410,7 @@ mod tests {
     }
 
     fn test_router(playground: Arc<dyn PlaygroundExecution>) -> Router {
-        router(playground, ORIGIN_VALUE.to_owned())
+        router(playground, ORIGIN_VALUE.to_owned(), Metrics::for_tests())
     }
 
     fn run_request(body: &str, origin: Option<&str>) -> Request<Body> {
