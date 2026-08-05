@@ -17,6 +17,7 @@
 //!   [`parse_framed_output`].
 
 mod docker;
+mod execute;
 mod framing;
 mod job;
 mod limits;
@@ -26,6 +27,9 @@ mod source;
 
 pub use docker::{
     CONTAINER_NAME_PREFIX, DockerRun, JOB_MOUNT_PATH, WORK_MOUNT_PATH, container_name, docker_argv,
+};
+pub use execute::{
+    DEFAULT_DOCKER_BINARY, DEFAULT_JOBS_ROOT, DockerSandbox, DockerSandboxConfig, SandboxError,
 };
 pub use framing::{
     FramedOutput, FramingError, RunStatus, SECTION_SENTINEL, Section, parse_framed_output, truncate,

@@ -23,6 +23,12 @@ pub struct DockerRun<'a> {
     pub job_directory: &'a str,
     /// Tag of the sandbox image to run.
     pub image: &'a str,
+    /// `uid:gid` the container process must run as, when the host has one.
+    ///
+    /// The job directory is created `0700`, so the container can only read its
+    /// input if it runs as the owning user. Passing this explicitly also means
+    /// confinement to a non-root user does not depend on the image's `USER`.
+    pub user: Option<&'a str>,
     /// What the container should do.
     pub mode: SandboxMode,
     /// Which profile to build with.
@@ -52,6 +58,9 @@ pub fn docker_argv(run: &DockerRun<'_>, limits: &SandboxLimits) -> Vec<String> {
     argv.push("--read-only".to_owned());
     argv.push("--cap-drop=ALL".to_owned());
     argv.push("--security-opt=no-new-privileges".to_owned());
+    if let Some(user) = run.user {
+        argv.push(format!("--user={user}"));
+    }
 
     // Resource ceilings. Memory and swap are pinned together so the container
     // cannot escape the memory limit by swapping.
@@ -106,6 +115,10 @@ mod tests {
     const IMAGE: &str = "rux-playground:0.4.0";
 
     fn argv(mode: SandboxMode, profile: SandboxProfile) -> Vec<String> {
+        argv_as(mode, profile, None)
+    }
+
+    fn argv_as(mode: SandboxMode, profile: SandboxProfile, user: Option<&str>) -> Vec<String> {
         let job_id = JobId::new(JOB).unwrap();
         let nonce = Nonce::new(NONCE).unwrap();
         let run = DockerRun {
@@ -113,6 +126,7 @@ mod tests {
             nonce: &nonce,
             job_directory: JOB_DIRECTORY,
             image: IMAGE,
+            user,
             mode,
             profile,
         };
@@ -254,6 +268,20 @@ mod tests {
             assert_eq!(argv[position + 3], NONCE);
             assert_eq!(argv.len(), position + 4, "no arguments follow the nonce");
         }
+    }
+
+    #[test]
+    fn a_supplied_user_is_passed_so_the_private_job_mount_stays_readable() {
+        let argv = argv_as(SandboxMode::Run, SandboxProfile::Debug, Some("998:998"));
+
+        assert!(argv.iter().any(|item| item == "--user=998:998"));
+    }
+
+    #[test]
+    fn no_user_flag_is_emitted_when_the_host_has_no_owner_to_name() {
+        let argv = argv(SandboxMode::Run, SandboxProfile::Debug);
+
+        assert!(!argv.iter().any(|item| item.starts_with("--user")));
     }
 
     #[test]

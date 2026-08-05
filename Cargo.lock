@@ -2860,11 +2860,14 @@ dependencies = [
 name = "rux-sandbox"
 version = "0.1.0"
 dependencies = [
+ "rand 0.9.5",
  "rux-domain",
  "rux-manifest",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]
