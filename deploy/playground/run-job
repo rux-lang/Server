@@ -1,0 +1,138 @@
+#!/bin/sh
+# Runs one playground job and frames the result on standard output.
+#
+#   run-job <mode> <profile> <nonce> <compile_seconds> <run_seconds> <max_output_bytes>
+#
+# Every argument is server-generated: two enums, a hex nonce, and three
+# integers. Nothing the submitter wrote reaches this script's arguments or its
+# environment - the source, the manifest, and standard input arrive only as
+# files in the read-only /job mount.
+#
+# Output is a sequence of sections, each introduced by a line that is exactly
+# \x1e<nonce>:<section>. The nonce is generated per run and never revealed to
+# the program, so a program printing a guessed sentinel cannot forge a section.
+# Every section body is capped with head(1), and the final `status` section
+# carries the exit codes and durations the server reports.
+
+set -u
+
+if [ "$#" -ne 6 ]; then
+    echo 'run-job: expected mode, profile, nonce, and three limits' >&2
+    exit 64
+fi
+
+mode="$1"
+profile="$2"
+nonce="$3"
+compile_seconds="$4"
+run_seconds="$5"
+max_output="$6"
+
+JOB=/job
+WORK=/work
+SEPARATOR=$(printf '\036')
+
+# Package name and layout are fixed by the manifest the server generates.
+PACKAGE=Playground
+
+emit() {
+    printf '%s%s:%s\n' "$SEPARATOR" "$nonce" "$1"
+}
+
+# Copies a capped prefix of a file, tolerating a file that was never created.
+emit_capped() {
+    if [ -f "$1" ]; then
+        head -c "$max_output" "$1"
+    fi
+}
+
+now_ms() {
+    # `date` reports nanoseconds; milliseconds are what the contract carries.
+    echo $(( $(date +%s%N) / 1000000 ))
+}
+
+case "$profile" in
+    release) profile_directory=Release; build_flags=--release ;;
+    *)       profile_directory=Debug;   build_flags= ;;
+esac
+
+# The job mount is read-only, so everything the compiler writes goes to the
+# tmpfs. This is also why /work is not mounted noexec: the built program is
+# executed from it.
+# `cp -R`, not `cp -a`: preserving ownership and timestamps onto a tmpfs the
+# sandbox user does not own fails, and none of it is wanted anyway.
+cp -R "$JOB/." "$WORK/" || {
+    echo 'run-job: could not stage the job' >&2
+    exit 70
+}
+cd "$WORK" || exit 70
+
+build_log="$WORK/.build.log"
+run_out="$WORK/.stdout"
+run_err="$WORK/.stderr"
+
+build_started=$(now_ms)
+if [ "$mode" = fmt ]; then
+    # Formatting rewrites the source in place; its diagnostics are the build
+    # section so a caller has one place to look for compiler messages.
+    timeout "$compile_seconds" rux fmt >"$build_log" 2>&1
+    build_status=$?
+else
+    # shellcheck disable=SC2086 # build_flags is one optional literal flag.
+    timeout "$compile_seconds" rux build $build_flags >"$build_log" 2>&1
+    build_status=$?
+fi
+build_ms=$(( $(now_ms) - build_started ))
+
+run_status=
+run_signal=0
+run_ms=
+timed_out=0
+[ "$build_status" -eq 124 ] && timed_out=1
+
+if [ "$mode" = run ] && [ "$build_status" -eq 0 ]; then
+    artifact="$WORK/Bin/$profile_directory/$PACKAGE"
+    if [ -x "$artifact" ]; then
+        run_started=$(now_ms)
+        timeout "$run_seconds" "$artifact" <"$JOB/stdin" >"$run_out" 2>"$run_err"
+        run_status=$?
+        run_ms=$(( $(now_ms) - run_started ))
+        if [ "$run_status" -eq 124 ]; then
+            timed_out=1
+        elif [ "$run_status" -gt 128 ]; then
+            # A shell reports a signalled child as 128 + signal.
+            run_signal=$(( run_status - 128 ))
+        fi
+    else
+        # A successful build with no artifact is a contract violation, not a
+        # program failure; report it as an unsuccessful build.
+        build_status=70
+    fi
+fi
+
+emit build
+emit_capped "$build_log"
+
+if [ "$mode" = run ]; then
+    emit stdout
+    emit_capped "$run_out"
+    emit stderr
+    emit_capped "$run_err"
+fi
+
+if [ "$mode" = fmt ] && [ "$build_status" -eq 0 ]; then
+    emit formatted
+    emit_capped "$WORK/Src/Main.rux"
+fi
+
+emit status
+echo "build_exit=$build_status"
+echo "build_ms=$build_ms"
+if [ -n "$run_status" ]; then
+    echo "run_exit=$run_status"
+    echo "run_signal=$run_signal"
+    echo "run_ms=$run_ms"
+fi
+echo "timed_out=$timed_out"
+
+exit 0

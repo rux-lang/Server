@@ -42,7 +42,7 @@ pub struct DockerRun<'a> {
 /// container only as files inside the read-only [`JOB_MOUNT_PATH`] mount, never
 /// as an argument and never as an environment variable.
 ///
-/// The working tmpfs is mounted `nosuid,nodev` but **not** `noexec`: the
+/// The working tmpfs is mounted `nosuid,nodev` but explicitly `exec`: the
 /// compiler writes the program there and the entry point executes it.
 /// Confinement comes from the empty capability set, the dropped network, and
 /// the read-only root filesystem instead.
@@ -74,18 +74,31 @@ pub fn docker_argv(run: &DockerRun<'_>, limits: &SandboxLimits) -> Vec<String> {
         "--mount=type=bind,source={},target={JOB_MOUNT_PATH},readonly",
         run.job_directory
     ));
+    // Two options here are load-bearing and easy to lose. `exec` must be stated
+    // outright: the runtime adds `noexec` to a tmpfs by default, and the
+    // compiled program is executed from this mount, so omitting it makes every
+    // run fail with a build that succeeded and an artifact that will not run.
+    // `mode=1777` matters because the mount otherwise arrives owned by root
+    // with 0755, and the entry point's first act is to stage the job into it.
     argv.push(format!(
-        "--tmpfs={WORK_MOUNT_PATH}:rw,nosuid,nodev,size={}",
+        "--tmpfs={WORK_MOUNT_PATH}:rw,exec,nosuid,nodev,mode=1777,size={}",
         limits.tmpfs_bytes
     ));
     argv.push(format!("--workdir={WORK_MOUNT_PATH}"));
 
     argv.push(run.image.to_owned());
 
-    // The entry point's own arguments: two enums and a hex nonce.
+    // The entry point's own arguments: two enums, a hex nonce, and three
+    // integers from the configured limits. The in-container `timeout(1)` is the
+    // primary bound on a run, so the limits have to travel here - baking them
+    // into the image would leave the operator's configuration with no effect on
+    // anything but the outer deadline.
     argv.push(run.mode.as_arg().to_owned());
     argv.push(run.profile.as_arg().to_owned());
     argv.push(run.nonce.as_str().to_owned());
+    argv.push(limits.compile_timeout_seconds.to_string());
+    argv.push(limits.run_timeout_seconds.to_string());
+    argv.push(limits.max_output_bytes.to_string());
 
     argv
 }
@@ -103,7 +116,7 @@ fn format_cpus(cpu_millis: u32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{DockerRun, container_name, docker_argv, format_cpus};
+    use super::{container_name, docker_argv, format_cpus, DockerRun};
     use crate::job::{JobId, Nonce};
     use crate::limits::SandboxLimits;
     use crate::request::{SandboxMode, SandboxProfile};
@@ -190,9 +203,16 @@ mod tests {
         assert!(tmpfs.contains("nodev"));
         assert!(tmpfs.contains("size=33554432"));
         assert!(
-            !tmpfs.contains("noexec"),
+            tmpfs.contains("mode=1777"),
+            "the sandbox user must be able to stage the job into this mount"
+        );
+        // Asserting `noexec` is merely absent is not enough: the runtime adds
+        // it by default, so `exec` has to be requested explicitly.
+        assert!(
+            tmpfs.contains(",exec,"),
             "the compiled program is executed from this mount"
         );
+        assert!(!tmpfs.contains("noexec"));
     }
 
     #[test]
@@ -226,10 +246,13 @@ mod tests {
             "--memory-swap=134217728",
             "--cpus=0.500",
             "--pids-limit=32",
-            "--tmpfs=/work:rw,nosuid,nodev,size=33554432",
+            "--tmpfs=/work:rw,exec,nosuid,nodev,mode=1777,size=33554432",
             "--workdir=/work",
             "run",
             "debug",
+            "5",
+            "3",
+            "16384",
         ]
         .iter()
         .map(|item| (*item).to_owned())
@@ -247,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn the_image_is_followed_only_by_mode_profile_and_nonce() {
+    fn the_image_is_followed_by_the_entry_point_contract_in_order() {
         for (mode, profile, expected) in [
             (SandboxMode::Run, SandboxProfile::Debug, ["run", "debug"]),
             (
@@ -266,7 +289,16 @@ mod tests {
             assert_eq!(argv[position + 1], expected[0]);
             assert_eq!(argv[position + 2], expected[1]);
             assert_eq!(argv[position + 3], NONCE);
-            assert_eq!(argv.len(), position + 4, "no arguments follow the nonce");
+            // The three limits the entry point enforces in-container. Their
+            // arity is a contract with deploy/playground/run-job.
+            assert_eq!(argv[position + 4], "5");
+            assert_eq!(argv[position + 5], "3");
+            assert_eq!(argv[position + 6], "16384");
+            assert_eq!(
+                argv.len(),
+                position + 7,
+                "the entry point takes six arguments"
+            );
         }
     }
 
