@@ -434,9 +434,8 @@ impl Drop for JobDirectory {
 
 #[cfg(unix)]
 fn private_dir_builder() -> tokio::fs::DirBuilder {
-    use std::os::unix::fs::DirBuilderExt as _;
-
     let mut builder = tokio::fs::DirBuilder::new();
+    // `mode` is inherent on Unix, so no extension trait is needed here.
     builder.mode(0o700);
     builder
 }

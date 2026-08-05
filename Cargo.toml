@@ -21,6 +21,7 @@ rux-application.workspace = true
 rux-artifact.workspace = true
 rux-infrastructure.workspace = true
 rux-manifest.workspace = true
+rux-sandbox.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

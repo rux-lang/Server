@@ -22,6 +22,7 @@ mod framing;
 mod job;
 mod limits;
 mod manifest;
+pub mod protocol;
 mod request;
 mod source;
 
@@ -48,6 +49,9 @@ pub use manifest::{
 pub use request::{
     BuildOutcome, ProgramOutcome, SandboxMode, SandboxOutcome, SandboxProfile, SandboxRequest,
 };
+/// Re-exported so a consumer can build a [`PackageAllowlist`] without also
+/// depending on `rux-domain`.
+pub use rux_domain::IdentitySegment;
 pub use source::{SourceError, validate_source, validate_stdin};
 
 /// Relative path of the generated manifest inside a job directory.
