@@ -83,11 +83,21 @@ docker compose --profile tools run --rm catalog-seed
 
 The opt-in `catalog-seed` service waits for PostgreSQL, runs `deploy/local/local-catalog.sql` with stop-on-error behavior, and removes its one-shot container afterward. The `tools` profile keeps it out of ordinary `docker compose up` runs.
 
-The fixture contains the `Rux`, `Community_Tools`, and `Acme` namespaces and a small package graph spanning source, library, and program packages. Its nine versions cover multiple releases, a prerelease, build-metadata variants, a yanked release, display-name normalization, ordered authors and keywords, README and license alternatives, search text, and reverse dependencies.
+The fixture contains 100 packages across 12 namespaces — `Rux`, `CommunityTools`, `Acme`, `Northwind`, `Helio`, `Cobalt`, `Ironbark`, `Lumen`, `Meridian`, `Orbit`, `Sentinel`, and `Vantage` — with 2 to 10 releases each. Its 636 versions span source, library, and program packages and cover prereleases, build-metadata variants, yanked releases, ordered authors and keywords, generated READMEs, license expressions, search text, a dependency graph, and 90 days of download history.
 
-The seed is one transaction and takes a transaction-scoped advisory lock to serialize concurrent invocations. Every insert uses stable catalog identities with `ON CONFLICT DO NOTHING`; it never updates, deletes, or truncates data. Running it again therefore preserves local changes and unrelated rows while adding any fixture rows whose natural keys are still absent.
+Display names are PascalCase with no separators, so `HttpClient` normalizes to `httpclient`. The `_` → `-` normalization path is still exercised, by the unit fixtures in `src/discovery.rs` rather than by this seed.
 
-Only PostgreSQL catalog metadata is seeded. The fixture does not create users, ownership, credentials, audit records, download events, or MinIO objects. Its artifact checksums and `local-seed/` storage keys are deterministic placeholders, so seeded package downloads are not expected to resolve to an object.
+`deploy/local/local-catalog.sql` is **generated, not hand-edited**. Regenerate it after changing the curated list in `tools/catalog/packages.mjs`:
+
+```powershell
+node tools/catalog/generate-catalog.mjs
+```
+
+The generator is deterministic — its PRNG is seeded from each package's identity — so an unchanged input produces a byte-identical file. It prints the row counts asserted by `crates/infrastructure/tests/local_catalog_seed.rs`; update those together.
+
+The seed is one transaction and takes a transaction-scoped advisory lock to serialize concurrent invocations. Every catalog insert uses stable identities with `ON CONFLICT DO NOTHING`; it never updates, deletes, or truncates data. `download_events` has no natural key to conflict on, so it is guarded by `NOT EXISTS` instead — without that, re-running would double every count and skew the popularity ranking. Running the seed again therefore preserves local changes and unrelated rows while adding only what is still absent.
+
+Only PostgreSQL catalog metadata and download history are seeded. The fixture does not create users, ownership, credentials, audit records, or MinIO objects. Its artifact checksums and `local-seed/` storage keys are deterministic placeholders, so seeded package downloads are not expected to resolve to an object.
 
 ## Schema verification
 
