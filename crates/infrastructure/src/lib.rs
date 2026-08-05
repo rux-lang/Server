@@ -13,12 +13,18 @@ use thiserror::Error;
 
 mod authentication;
 mod object_storage;
+mod playground;
 mod postgres;
 
 pub use authentication::{
     GitHubOAuthClient, GitHubOAuthConfig, OsCredentialGenerator, SystemClock,
 };
 pub use object_storage::SpacesArtifactStorage;
+/// The playground adapter is constructed on its own rather than as part of
+/// [`Infrastructure`]: the registry must boot without it, and it is
+/// deliberately absent from [`DependencyProbe`] so a stopped sandbox cannot
+/// fail `/health/ready` and pull the registry out of rotation.
+pub use playground::UnixSocketPlayground;
 pub use postgres::PostgresRepository;
 
 /// Environment-backed infrastructure configuration.

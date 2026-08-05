@@ -2818,6 +2818,7 @@ dependencies = [
  "reqwest",
  "rux-application",
  "rux-domain",
+ "rux-sandbox",
  "serde",
  "serde_json",
  "sha2 0.10.9",

@@ -18,11 +18,13 @@ rand.workspace = true
 reqwest.workspace = true
 rux-application.workspace = true
 rux-domain.workspace = true
+rux-sandbox.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 time.workspace = true
+tokio.workspace = true
 url.workspace = true
 uuid.workspace = true
 
@@ -30,7 +32,6 @@ uuid.workspace = true
 axum.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
 
 [lints]
 workspace = true
