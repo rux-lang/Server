@@ -53,6 +53,7 @@ members = [
   "crates/domain",
   "crates/infrastructure",
   "crates/manifest",
+  "crates/sandbox",
   "tools/performance",
 ]
 resolver = "2"
@@ -88,7 +89,8 @@ rux-artifact = { path = "crates/artifact" }
 rux-domain = { path = "crates/domain" }
 rux-infrastructure = { path = "crates/infrastructure" }
 rux-manifest = { path = "crates/manifest" }
-serde = { version = "1", features = ["derive"] }
+rux-sandbox = { path = "crates/sandbox" }
+serde ={ version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 subtle = "2.6"
