@@ -10,6 +10,7 @@ pub mod metadata;
 pub mod namespaces;
 pub mod observability;
 pub mod openapi;
+pub mod playground;
 pub mod publication;
 pub mod resolver;
 pub mod search;
