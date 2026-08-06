@@ -41,6 +41,39 @@ rux_upload_temporary_capacity_bytes: 104857600
 rux_dependency_probe_interval_seconds: 15
 rux_rust_log: info,rux_server=info
 
+# Playground. Disabled by default: enabling it installs a container runtime and
+# makes Docker a production dependency of this host for the first time, which is
+# an opt-in an operator should make deliberately rather than inherit from a
+# routine site.yml run.
+playground_enabled: false
+playground_build_image: true
+playground_rux_version: 0.3.0
+playground_rux_sha256: 82e654f9ced042dc029220836d1322b208790099627f32efd9d8d600834be5cc
+# Space-separated standard packages seeded into the image, and the
+# Root:Namespace imports the broker will resolve against them. Both are empty
+# until the package registry the compiler fetches from exists; see docs.
+playground_packages: ""
+playground_allowlist: ""
+playground_docker_version: 5:29.7.2-1~ubuntu.26.04~resolute
+playground_containerd_version: 2.3.3-1~ubuntu.26.04~resolute
+playground_state_root: /var/lib/rux-playground
+playground_jobs_root: /var/lib/rux-playground/jobs
+playground_runtime_directory: /run/rux-playground
+playground_socket_path: /run/rux-playground/run.sock
+playground_memory_bytes: 134217728
+playground_cpu_millis: 500
+playground_compile_timeout_seconds: 5
+playground_run_timeout_seconds: 3
+playground_max_concurrency: 2
+playground_request_timeout_seconds: 30
+playground_container_nofile: 1024
+playground_rust_log: info,rux_playgroundd=info
+
+rux_playground_timeout_seconds: 30
+rux_playground_max_concurrency: 2
+rux_rate_limit_playground_per_minute: 10
+rux_rate_limit_playground_burst: 4
+
 rux_prometheus_version: 3.13.0
 rux_prometheus_checksum: 744d93324cc024d82089921737bd797474d7f1e5dbbfd1c6b387bad258538cb9
 rux_prometheus_retention_time: 30d

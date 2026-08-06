@@ -1,6 +1,12 @@
 #!/usr/sbin/nft -f
 
-flush ruleset
+# Replace only the table this file owns. `flush ruleset` would also delete the
+# tables a container runtime installs, so reloading the host firewall would
+# silently drop rules this file never wrote. The bare `table` line creates the
+# table when it is absent, so the `delete` below always has a target and the
+# whole reload stays atomic.
+table inet rux_filter
+delete table inet rux_filter
 
 table inet rux_filter {
   chain input {

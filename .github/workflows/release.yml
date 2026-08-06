@@ -93,6 +93,7 @@ jobs:
           RUX_RELEASE_VERSION: ${{ steps.identity.outputs.version }}
           RUX_RELEASE_SOURCE_DATE_EPOCH: ${{ steps.identity.outputs.source_date_epoch }}
           RUX_RELEASE_API_BINARY: target/release/rux-server
+          RUX_RELEASE_PLAYGROUND_BINARY: target/release/rux-playgroundd
           RUX_RELEASE_SQLX_BINARY: .release-tools/bin/sqlx
           RUX_RELEASE_OUTPUT_DIRECTORY: release-output
         run: |

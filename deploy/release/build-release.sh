@@ -6,6 +6,7 @@ required=(
   RUX_RELEASE_COMMIT
   RUX_RELEASE_VERSION
   RUX_RELEASE_API_BINARY
+  RUX_RELEASE_PLAYGROUND_BINARY
   RUX_RELEASE_SQLX_BINARY
   RUX_RELEASE_OUTPUT_DIRECTORY
   RUX_RELEASE_SOURCE_DATE_EPOCH
@@ -33,8 +34,8 @@ if [[ ! "$RUX_RELEASE_SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
   echo "RUX_RELEASE_SOURCE_DATE_EPOCH must be a Unix timestamp" >&2
   exit 1
 fi
-if [[ ! -x "$RUX_RELEASE_API_BINARY" || ! -x "$RUX_RELEASE_SQLX_BINARY" ]]; then
-  echo "release API and SQLx inputs must be executable files" >&2
+if [[ ! -x "$RUX_RELEASE_API_BINARY" || ! -x "$RUX_RELEASE_SQLX_BINARY" || ! -x "$RUX_RELEASE_PLAYGROUND_BINARY" ]]; then
+  echo "release API, playground and SQLx inputs must be executable files" >&2
   exit 1
 fi
 output_directory=$(realpath -m "$RUX_RELEASE_OUTPUT_DIRECTORY")
@@ -52,6 +53,10 @@ trap 'rm -rf -- "$staging_root"' EXIT
 release_root="$staging_root/release"
 install -d -m 0755 "$release_root/bin" "$release_root/migrations"
 install -m 0755 "$RUX_RELEASE_API_BINARY" "$release_root/bin/rux-server"
+# The playground broker ships with the API it serves: both are built from this
+# workspace, and deploy/ansible points rux-playground.service at the same
+# release directory so a deploy moves the pair together.
+install -m 0755 "$RUX_RELEASE_PLAYGROUND_BINARY" "$release_root/bin/rux-playgroundd"
 install -m 0755 "$RUX_RELEASE_SQLX_BINARY" "$release_root/bin/sqlx"
 cp -a migrations/. "$release_root/migrations/"
 find "$release_root/migrations" -type d -exec chmod 0755 {} +

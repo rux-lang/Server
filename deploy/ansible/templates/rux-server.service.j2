@@ -3,7 +3,7 @@ Description=Rux Server
 After=network-online.target postgresql.service
 Wants=network-online.target
 Requires=postgresql.service
-ConditionPathIsExecutable=/srv/rux-server/current/bin/rux-server
+ConditionFileIsExecutable=/srv/rux-server/current/bin/rux-server
 
 [Service]
 Type=simple
@@ -30,7 +30,11 @@ ProtectKernelLogs=true
 ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/rux-server/uploads
+# Connecting to a unix socket counts as a write, so the playground's runtime
+# directory has to be writable for the registry to reach the broker. The leading
+# dash keeps the unit startable when the playground is not provisioned at all,
+# which is the default.
+ReadWritePaths=/var/lib/rux-server/uploads -{{ playground_runtime_directory }}
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=true
 RestrictRealtime=true

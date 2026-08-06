@@ -1,0 +1,38 @@
+{#
+  Docker daemon policy for a host whose only containers are playground runs.
+
+  Every run is started with --network=none, so the daemon needs no container
+  networking at all. Turning the default bridge off and leaving the firewall
+  alone is what keeps Docker out of nftables: with "iptables" false there are no
+  Docker rules for templates/nftables.conf.j2 to clobber, and with "bridge" none
+  there is no docker0 interface and nothing to forward. That is a stronger
+  guarantee than ordering the two services carefully, and it reinforces the
+  `chain forward { policy drop; }` the host firewall already applies.
+
+  The one thing that does need the network is building the sandbox image, which
+  downloads a pinned compiler tarball. deploy/playground/build-image.sh passes
+  --network=host for exactly that reason.
+
+  userns-remap is deliberately absent: the broker mounts a 0700 job directory
+  into the container and passes --user with the host uid that owns it, which a
+  remapped user namespace would shift out from under the mount.
+#}
+{
+  "bridge": "none",
+  "iptables": false,
+  "ip6tables": false,
+  "live-restore": true,
+  "no-new-privileges": true,
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  },
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": {{ playground_container_nofile | int }},
+      "Soft": {{ playground_container_nofile | int }}
+    }
+  }
+}

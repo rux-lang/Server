@@ -22,7 +22,7 @@ staging_root=$(mktemp -d)
 trap 'rm -rf -- "$staging_root"' EXIT
 tar -xzf "$archive" -C "$staging_root"
 
-for path in release.json SHA256SUMS bin/rux-server bin/sqlx; do
+for path in release.json SHA256SUMS bin/rux-server bin/rux-playgroundd bin/sqlx; do
   if [[ ! -f "$staging_root/$path" ]]; then
     echo "release archive is missing $path" >&2
     exit 1
@@ -32,7 +32,7 @@ if find "$staging_root" -type l -print -quit | grep -q .; then
   echo "release archive must not contain symbolic links" >&2
   exit 1
 fi
-if [[ ! -x "$staging_root/bin/rux-server" || ! -x "$staging_root/bin/sqlx" ]]; then
+if [[ ! -x "$staging_root/bin/rux-server" || ! -x "$staging_root/bin/rux-playgroundd" || ! -x "$staging_root/bin/sqlx" ]]; then
   echo "release executables have unsafe modes" >&2
   exit 1
 fi

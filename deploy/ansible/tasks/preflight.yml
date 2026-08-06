@@ -66,3 +66,28 @@
       - rux_alert_warning_webhook_url != rux_alert_critical_webhook_url
     fail_msg: Warning and critical alerts must use distinct webhook receivers.
   no_log: true
+
+# Every bound here is also enforced by the daemon and the API at startup. Failing
+# in preflight instead means a bad value never reaches a rendered environment
+# file, where it would surface as a service that refuses to start after a deploy.
+- name: Require a coherent playground configuration
+  ansible.builtin.assert:
+    that:
+      - playground_rux_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - playground_rux_sha256 is match('^[0-9a-f]{64}$')
+      - playground_docker_version | length > 0
+      - playground_containerd_version | length > 0
+      - rux_playground_timeout_seconds | int >= rux_request_timeout_seconds | int
+      - rux_playground_timeout_seconds | int <= 120
+      - rux_playground_max_concurrency | int >= 1
+      - rux_playground_max_concurrency | int <= 16
+      - playground_max_concurrency | int >= 1
+      - playground_max_concurrency | int <= 16
+      - playground_compile_timeout_seconds | int >= 1
+      - playground_compile_timeout_seconds | int <= 120
+      - playground_run_timeout_seconds | int >= 1
+      - playground_run_timeout_seconds | int <= 120
+      - playground_memory_bytes | int >= 16777216
+      - playground_allowlist | length == 0 or playground_packages | length > 0
+    fail_msg: The playground needs a pinned release with its checksum, bounds the API and daemon accept, and an allowlist limited to seeded packages.
+  when: playground_enabled | bool

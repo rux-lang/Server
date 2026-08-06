@@ -265,6 +265,25 @@
           {{ rux_release_previous_current.stat.lnk_source
              if rux_release_previous_current.stat.exists else '' }}
 
+    # The broker is deliberately not part of the required candidate layout above:
+    # keeping it optional is what lets a rollback to a release built before the
+    # playground existed still deploy, with the unit simply staying down.
+    - name: Check for a provisioned playground broker
+      ansible.builtin.stat:
+        path: /etc/systemd/system/rux-playground.service
+      register: rux_release_playground_unit
+
+    - name: Check for a playground broker in the candidate release
+      ansible.builtin.stat:
+        path: "{{ rux_release_candidate }}/bin/rux-playgroundd"
+      register: rux_release_playground_binary
+
+    - name: Check for a playground broker in the previous release
+      ansible.builtin.stat:
+        path: "{{ rux_release_previous_target }}/bin/rux-playgroundd"
+      when: rux_release_previous_target | length > 0
+      register: rux_release_previous_playground
+
     - name: Promote and verify the candidate release
       block:
         - name: Atomically select the candidate release
@@ -280,6 +299,15 @@
           ansible.builtin.systemd_service:
             name: rux-server
             state: restarted
+
+        # Stopped rather than left alone when the candidate carries no broker:
+        # the running process would otherwise keep serving from the release
+        # directory this deploy just moved off.
+        - name: Select the playground broker for the promoted release
+          ansible.builtin.systemd_service:
+            name: rux-playground
+            state: "{{ 'restarted' if rux_release_playground_binary.stat.exists else 'stopped' }}"
+          when: rux_release_playground_unit.stat.exists
 
         - name: Verify the promoted release
           ansible.builtin.include_tasks: tasks/verify-release-health.yml
@@ -301,6 +329,17 @@
             state: restarted
           when: rux_release_previous_target | length > 0
 
+        - name: Select the playground broker for the restored release
+          ansible.builtin.systemd_service:
+            name: rux-playground
+            state: >-
+              {{ 'restarted'
+                 if rux_release_previous_playground.stat.exists | default(false)
+                 else 'stopped' }}
+          when:
+            - rux_release_previous_target | length > 0
+            - rux_release_playground_unit.stat.exists
+
         - name: Verify the restored release
           ansible.builtin.include_tasks: tasks/verify-release-health.yml
           when: rux_release_previous_target | length > 0
@@ -316,6 +355,14 @@
             name: rux-server
             state: stopped
           when: rux_release_previous_target | length == 0
+
+        - name: Stop the playground broker after a failed first release
+          ansible.builtin.systemd_service:
+            name: rux-playground
+            state: stopped
+          when:
+            - rux_release_previous_target | length == 0
+            - rux_release_playground_unit.stat.exists
 
         - name: Fail after restoring the previous application release
           ansible.builtin.fail:

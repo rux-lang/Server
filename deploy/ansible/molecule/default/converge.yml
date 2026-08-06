@@ -28,3 +28,9 @@
     rux_grafana_admin_password: molecule-grafana-password-12345
     rux_alert_warning_webhook_url: https://warning.example.test/alerts
     rux_alert_critical_webhook_url: https://critical.example.test/alerts
+    playground_enabled: true
+    # The image build downloads a pinned compiler release and seeds a package
+    # cache; CI builds and exercises it in its own job against
+    # deploy/playground/test-image.sh, so the convergence check covers the host
+    # side only.
+    playground_build_image: false

@@ -80,6 +80,23 @@
       ansible.builtin.set_fact:
         rux_rollback_starting_target: "{{ rux_rollback_starting_current.stat.lnk_source }}"
 
+    # Optional on both sides: a release predating the playground carries no
+    # broker, and rolling back to one must still succeed with the unit down.
+    - name: Check for a provisioned playground broker
+      ansible.builtin.stat:
+        path: /etc/systemd/system/rux-playground.service
+      register: rux_rollback_playground_unit
+
+    - name: Check for a playground broker in the rollback release
+      ansible.builtin.stat:
+        path: "{{ rux_rollback_target }}/bin/rux-playgroundd"
+      register: rux_rollback_playground_binary
+
+    - name: Check for a playground broker in the starting release
+      ansible.builtin.stat:
+        path: "{{ rux_rollback_starting_target }}/bin/rux-playgroundd"
+      register: rux_rollback_starting_playground
+
     - name: Select and verify the rollback release
       block:
         - name: Atomically select the rollback release
@@ -95,6 +112,12 @@
           ansible.builtin.systemd_service:
             name: rux-server
             state: restarted
+
+        - name: Restart the playground broker on the rollback release
+          ansible.builtin.systemd_service:
+            name: rux-playground
+            state: "{{ 'restarted' if rux_rollback_playground_binary.stat.exists else 'stopped' }}"
+          when: rux_rollback_playground_unit.stat.exists
 
         - name: Verify the selected rollback release
           ansible.builtin.include_tasks: tasks/verify-release-health.yml
@@ -112,6 +135,12 @@
           ansible.builtin.systemd_service:
             name: rux-server
             state: restarted
+
+        - name: Restart the playground broker active before rollback
+          ansible.builtin.systemd_service:
+            name: rux-playground
+            state: "{{ 'restarted' if rux_rollback_starting_playground.stat.exists else 'stopped' }}"
+          when: rux_rollback_playground_unit.stat.exists
 
         - name: Verify the restored starting release
           ansible.builtin.include_tasks: tasks/verify-release-health.yml

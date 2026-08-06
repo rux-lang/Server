@@ -34,6 +34,11 @@
       ansible.builtin.systemd_service:
         daemon_reload: true
 
+    - name: Restart Docker
+      ansible.builtin.systemd_service:
+        name: docker
+        state: restarted
+
     - name: Restart backup metrics exporter
       ansible.builtin.systemd_service:
         name: rux-node-exporter
@@ -100,6 +105,11 @@
     - name: Configure the API runtime
       ansible.builtin.import_tasks: tasks/api.yml
       tags: [api]
+
+    - name: Configure the playground runtime
+      ansible.builtin.import_tasks: tasks/playground.yml
+      when: playground_enabled | bool
+      tags: [playground]
 
     - name: Configure Caddy
       ansible.builtin.import_tasks: tasks/caddy.yml

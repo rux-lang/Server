@@ -28,6 +28,11 @@
           - ansible_facts.services['grafana-server.service'].state == 'running'
           - ansible_facts.services['rux-node-exporter.service'].state == 'running'
           - ansible_facts.services['rux-server.service'].state != 'running'
+          - ansible_facts.services['docker.service'].state == 'running'
+          # Both units start from the release directory, so a provisioned host
+          # has them enabled and waiting rather than running.
+          - ansible_facts.services['rux-playground.service'].status == 'enabled'
+          - ansible_facts.services['rux-playground.service'].state != 'running'
 
     - name: Verify recovery timer state
       ansible.builtin.command:
@@ -50,6 +55,7 @@
         - /etc/alertmanager/alertmanager.yml
         - /etc/grafana/rux-server.env
         - /etc/pgbackrest/pgbackrest.conf
+        - /etc/rux-playground/playground.env
       register: rux_secret_files
 
     - name: Assert secret ownership and permissions
@@ -175,3 +181,106 @@
       ansible.builtin.uri:
         url: http://127.0.0.1:3001/api/health
         status_code: 200
+
+    - name: Check playground runtime directories
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /var/lib/rux-playground
+        - /var/lib/rux-playground/jobs
+        - /run/rux-playground
+      register: rux_playground_directories
+
+    - name: Assert the job directory is private to the playground user
+      ansible.builtin.assert:
+        that:
+          - rux_playground_directories.results[0].stat.mode == '0750'
+          - rux_playground_directories.results[1].stat.mode == '0700'
+          - rux_playground_directories.results[2].stat.mode == '0750'
+          - rux_playground_directories.results | map(attribute='stat.pw_name') | unique == ['rux-playground']
+        fail_msg: A job directory readable by anyone but the playground user would expose submitted source.
+
+    - name: Read local group membership
+      ansible.builtin.getent:
+        database: group
+
+    # The socket is chmod 0660 by the daemon; a shared group is how the registry
+    # reaches it while holding no docker access of its own.
+    - name: Assert the registry reaches the socket by group and not by docker
+      ansible.builtin.assert:
+        that:
+          - "'rux-server' in ansible_facts.getent_group['rux-playground'][2].split(',')"
+          - "'rux-server' not in ansible_facts.getent_group['docker'][2].split(',')"
+          - "'rux-playground' in ansible_facts.getent_group['docker'][2].split(',')"
+        fail_msg: Only the playground user may hold docker access; the registry reaches the socket through a shared group.
+
+    - name: Read the Docker daemon policy
+      ansible.builtin.slurp:
+        src: /etc/docker/daemon.json
+      register: rux_docker_policy
+
+    - name: Assert the daemon adds no bridge and no firewall rules
+      ansible.builtin.assert:
+        that:
+          - (rux_docker_policy.content | b64decode | from_json).bridge == 'none'
+          - not (rux_docker_policy.content | b64decode | from_json).iptables
+          - not (rux_docker_policy.content | b64decode | from_json).ip6tables
+        fail_msg: A bridging or rule-writing daemon would contradict --network=none and the host firewall.
+
+    - name: Read the installed units
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - /etc/systemd/system/rux-server.service
+        - /etc/systemd/system/rux-playground.service
+      register: rux_playground_units
+
+    - name: Assert the trust boundary between the two units
+      ansible.builtin.assert:
+        that:
+          - "'-/run/rux-playground' in rux_server_unit"
+          - "'RestrictNamespaces=true' in rux_server_unit"
+          - "'SupplementaryGroups=docker' not in rux_server_unit"
+          - "'SupplementaryGroups=docker' in rux_playground_unit"
+          - "'RestrictNamespaces=true' not in rux_playground_unit"
+          - "'/run/docker.sock' in rux_playground_unit"
+        fail_msg: The registry must keep its hardening and gain no docker access; only the broker may reach the socket.
+      vars:
+        rux_server_unit: "{{ rux_playground_units.results[0].content | b64decode }}"
+        rux_playground_unit: "{{ rux_playground_units.results[1].content | b64decode }}"
+
+    # systemd drops a misspelled directive with nothing but a log line, so a
+    # typo in a hardening key silently removes the protection it was meant to
+    # apply. ConditionPathIsExecutable did exactly that until it was corrected
+    # to ConditionFileIsExecutable.
+    - name: Check systemd accepts every directive in the installed units
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemd-analyze
+          - verify
+          - "{{ item }}"
+      loop:
+        - /etc/systemd/system/rux-server.service
+        - /etc/systemd/system/rux-playground.service
+      register: rux_unit_directives
+      changed_when: false
+      failed_when: false
+
+    - name: Assert no unit directive was silently ignored
+      ansible.builtin.assert:
+        that:
+          - "'Unknown key' not in item.stdout"
+          - "'Unknown key' not in item.stderr"
+        fail_msg: "systemd ignored a directive in {{ item.item }}; a misspelled key drops the protection it was meant to apply."
+      loop: "{{ rux_unit_directives.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Assert the host firewall no longer flushes foreign tables
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/grep
+          - --quiet
+          - "^delete table inet rux_filter$"
+          - /etc/nftables.conf
+      changed_when: false

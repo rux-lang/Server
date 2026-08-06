@@ -43,8 +43,13 @@ packages="${3:-}"
 directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tag="rux-playground:${version}"
 
+# --network=host because the build is the one step that needs the network, and
+# the production host denies it to containers on purpose: the firewall's forward
+# chain drops container egress, and deploy/ansible turns the default bridge off
+# entirely. Host networking is the only route left, and it is harmless elsewhere.
 echo "Building ${tag} from Rux ${version}"
 docker build \
+    --network=host \
     --tag "$tag" \
     --build-arg "RUX_VERSION=${version}" \
     --build-arg "RUX_SHA256=${checksum}" \
