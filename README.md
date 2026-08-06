@@ -4,18 +4,20 @@
 [![Supply Chain](https://github.com/rux-lang/Server/actions/workflows/supply-chain.yml/badge.svg)](https://github.com/rux-lang/Server/actions/workflows/supply-chain.yml)
 [![License](https://img.shields.io/github/license/rux-lang/Server?style=flat)](LICENSE.md)
 
-The Rust server for the Rux programming language. It hosts the package registry today; the playground, language tooling, and chat integrations are planned alongside it. The public API is hosted at <https://api.rux-lang.dev>; the package catalog is part of <https://rux-lang.dev/packages>.
+The Rust server for the Rux programming language. It hosts the package registry and the playground; language tooling and chat integrations are planned alongside them. The public API is hosted at <https://api.rux-lang.dev>; the package catalog is part of <https://rux-lang.dev/packages>.
 
 ## Structure
 
-- `src/`: Axum composition root and HTTP contract.
-- `crates/`: domain, manifest, artifact, application, and infrastructure layers.
+- `src/`: Axum composition root and HTTP contract, plus the `rux-playgroundd` binary.
+- `crates/`: domain, manifest, artifact, application, infrastructure, and sandbox layers.
 - `migrations/`: reviewed SQLx migrations.
 - `deploy/`: local dependencies and production operations.
 - `tools/performance/`: deterministic launch-performance harness.
 - `docs/`: API, persistence, security, and operations contracts.
 
-Dependencies point inward: `domain <- application <- infrastructure <- server`, with `domain <- manifest <- artifact` for package inspection.
+Dependencies point inward: `domain <- application <- infrastructure <- server`, with `domain <- manifest <- artifact` for package inspection and `domain <- sandbox` for the playground.
+
+The playground runs submitted code in a throwaway container. Because Docker-socket access is root-equivalent and the registry shares the host, it runs as a second binary under a second user, reached over a unix socket; the API itself never touches a container runtime. It is disabled by default. See [docs/playground.md](docs/playground.md).
 
 ## Development
 

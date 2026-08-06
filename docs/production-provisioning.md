@@ -70,7 +70,17 @@ Ansible never reboots automatically. If `/run/reboot-required` exists, schedule 
 | Grafana `127.0.0.1:3001`          | SSH tunnel/local only          |
 | Recovery metrics `127.0.0.1:9100` | Prometheus only                |
 
-The playbook creates `/srv/rux-server/releases`, `/srv/rux-server/shared`, and the private upload directory. It installs and enables `rux-server.service` without changing the state of an already deployed service. On a new host the unit remains stopped and its `ConditionPathIsExecutable` is false until the release playbook installs `/srv/rux-server/current/bin/rux-server`. Release automation owns migrations, symlink promotion, readiness checks, and application rollback.
+The playbook creates `/srv/rux-server/releases`, `/srv/rux-server/shared`, and the private upload directory. It installs and enables `rux-server.service` without changing the state of an already deployed service. On a new host the unit remains stopped and its `ConditionFileIsExecutable` is false until the release playbook installs `/srv/rux-server/current/bin/rux-server`. Release automation owns migrations, symlink promotion, readiness checks, and application rollback.
+
+## Playground
+
+The [playground](playground.md) is **disabled by default**. Setting `playground_enabled: true` installs Docker CE from the official repository, which makes a container runtime a production dependency of this host for the first time — an opt-in an operator should make deliberately rather than inherit from a routine `site.yml` run. Run `molecule test` and a `--check` pass before enabling it on a live droplet.
+
+Enabling it creates a second service user, `rux-playground`, which is a member of `docker` and owns `/var/lib/rux-playground/jobs` (`0700`) and `/run/rux-playground`. `rux-server` is added to the `rux-playground` group so it can reach the `0660` socket, and gains **no** `docker` membership of its own; that asymmetry is the trust boundary, because socket access is root-equivalent and the registry's database is on this host. `/run` is a tmpfs, so the runtime directory is recreated at boot from `/etc/tmpfiles.d/rux-playground.conf` rather than by the broker. Like the API, `rux-playground.service` is installed and enabled but not started: its `ConditionFileIsExecutable` stays false until a release installs `/srv/rux-server/current/bin/rux-playgroundd`, and both binaries ship in the same release artifact.
+
+The Docker daemon is configured with no default bridge and no firewall rules of its own (`"bridge": "none"`, `"iptables": false`). Every run is `--network=none`, so nothing needs container networking, and there is consequently nothing for `/etc/nftables.conf` to clobber on reload — the host firewall template replaces only its own table, and a `docker.service` drop-in orders the daemon after `nftables.service` so re-enabling `iptables` stays safe. Container egress is denied by the firewall's `forward` chain regardless, which is why the image build uses host networking.
+
+Rotating the sandbox image means changing `playground_rux_version` and `playground_rux_sha256` together and rerunning the playbook; the build verifies the compiler tarball against that checksum and refuses to proceed without it. Because the sandbox has no network, **adding a standard package requires an image rebuild** — set `playground_packages` (seeded into the image) and `playground_allowlist` (the imports the broker honours), and note that preflight rejects an allowlist naming a package the image was never seeded with. Provisioning skips the build when the tagged image is already present, so a rebuild needs a new version tag or an explicit `docker image rm`.
 
 ## Operations and recovery
 

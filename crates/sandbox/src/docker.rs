@@ -116,7 +116,7 @@ fn format_cpus(cpu_millis: u32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{container_name, docker_argv, format_cpus, DockerRun};
+    use super::{DockerRun, container_name, docker_argv, format_cpus};
     use crate::job::{JobId, Nonce};
     use crate::limits::SandboxLimits;
     use crate::request::{SandboxMode, SandboxProfile};

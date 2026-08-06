@@ -15,18 +15,19 @@ browser ── HTTPS ─────────► rux-lang.dev/packages (Web r
                                       │ JSON over HTTPS
                                       ▼
 rux CLI ── HTTPS ─────────┐      ┌──────────────────────────────┐
-                          ├─────►│ api.rux-lang.dev             │
-Nuxt site ── HTTPS ───────┘      │ Caddy ──► Rust/Axum API      │
-                                 └──────────┬───────────┬───────┘
-                                            │           │
-                                            ▼           ▼
-                                     PostgreSQL 18  DigitalOcean
+                          ├─────►│ api.rux-lang.dev             │     unix      ┌─────────────────┐
+Nuxt site ── HTTPS ───────┘      │ Caddy ──► Rust/Axum API      │───socket─────►│ rux-playgroundd │
+                                 └──────────┬───────────┬───────┘               └────────┬────────┘
+                                            │           │                   docker run   │
+                                            ▼           ▼                                ▼
+                                     PostgreSQL 18  DigitalOcean                 sandbox container
                                                     Spaces + CDN
 ```
 
 - **Caddy** terminates TLS for `api.rux-lang.dev`, proxies the Rust process over loopback HTTP, and does not serve frontend files. Operational health routes are not publicly exposed.
 - **Web app** is owned by the separate `rux-lang/Web` repository and serves the registry beneath `https://rux-lang.dev/packages`.
 - **API app** is the root Tokio and Axum package. It owns HTTP contracts, authentication, authorization, registry use cases, dependency readiness, and access to persistence and object storage. Production runs it as an unprivileged systemd service.
+- **Playground broker** (`rux-playgroundd`) runs submitted code in a throwaway container. It is a second binary under a second service user, and the only process on the host permitted to reach the Docker socket. That split is a trust boundary rather than a packaging choice: socket access is root-equivalent, and the registry and its database share this droplet, so the API talks to the broker over a unix socket and never to a container runtime. It is optional and disabled by default. See [playground](playground.md).
 - **PostgreSQL 18** is the authoritative store for accounts, sessions, ownership, package metadata, tokens, audits, and download records. Only the API connects to it.
 - **DigitalOcean Spaces** stores immutable package artifacts through its S3-compatible API. The API publishes and manages objects; package downloads are redirected to the public Spaces CDN instead of being proxied through the droplet.
 
@@ -39,9 +40,12 @@ The API exposes bounded structured `/v1/sitemap` data; the separate Web reposito
 - `artifact` validates the ZIP-based [`.ruxpkg` contract](artifact.md), embedded publication manifest, portable paths, bounded contents, and source metrics while depending on `manifest`.
 - `application` contains use cases and declares ports for persistence, object storage, clocks, credentials, and identity.
 - `infrastructure` implements those ports with SQLx, PostgreSQL, the S3 API, and external identity providers.
-- `server` is the composition root and the only binary. It owns HTTP mapping, authentication middleware, CORS, rate limits, and the versioned [HTTP API contract](http-api.md), including RFC 9457 responses. Additional server-side surfaces are composed here rather than in separate binaries.
+- `sandbox` owns the playground's container contract: the resource envelope, the `docker` argument vector, the per-job directory, the nonce framing, and the socket protocol the API and the broker speak. It depends only on `domain` and small utility crates.
+- `server` is the composition root. It owns HTTP mapping, authentication middleware, CORS, rate limits, and the versioned [HTTP API contract](http-api.md), including RFC 9457 responses. Additional server-side surfaces are composed here rather than in separate binaries.
 
 Dependencies point inward. Handlers never issue SQL or S3 operations directly, and infrastructure cannot import API types.
+
+The root package produces two binaries: `rux-server`, and `rux-playgroundd` for the playground broker. The broker is a separate binary only because it must run as a different user with different privileges; it is not a separate service in the architectural sense, and both ship in the same release artifact so a deploy moves them together. `sandbox` spawns processes and writes files, so it is infrastructure in everything but name: `application` deliberately does not depend on it, and restates the playground's types as its own so the layer keeps depending on nothing but `domain`.
 
 ## Frontend and authentication
 

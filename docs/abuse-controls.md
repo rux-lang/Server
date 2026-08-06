@@ -18,6 +18,7 @@ The keyed token buckets use the following startup defaults:
 | Security    | Authentication, account, and token routes         |         30 |    10 |
 | Mutation    | Namespace membership/invitations and yank routes  |         60 |    20 |
 | Publication | `POST /v1/packages`                               |          6 |     2 |
+| Playground  | `POST /v1/playground/run`                         |         10 |     4 |
 
 The corresponding `RUX_RATE_LIMIT_<TIER>_PER_MINUTE` and `_BURST` variables must be positive, the rate cannot exceed 10,000 per minute, and the burst cannot exceed the rate. CORS preflight and health probes do not consume these budgets. Inactive keys are pruned every minute. A rejected request returns `429 rate_limited` and `Retry-After` without logging the limiter key.
 
@@ -26,6 +27,12 @@ The corresponding `RUX_RATE_LIMIT_<TIER>_PER_MINUTE` and `_BURST` variables must
 ## Upload admission and storage
 
 The immutable publication contract remains a 6 MiB multipart request, a 5 MiB artifact, and a 65,536-byte manifest. `RUX_UPLOAD_TEMPORARY_CAPACITY_BYTES` defaults to 100 MiB and must be between 5 MiB and 10 GiB. An empty `RUX_UPLOAD_TEMPORARY_DIRECTORY` selects the operating-system temporary directory below `rux-server-uploads`; production may set an explicit service directory. `RUX_UPLOAD_MAX_CONCURRENCY` defaults to 8 and is bounded from 1 through 64. Saturation fails immediately as `503 publication_unavailable` with `Retry-After: 1`.
+
+## Playground admission
+
+The [playground](playground.md) mirrors publication rather than the ordinary read path, because a run compiles and executes code instead of answering from the database. `RUX_PLAYGROUND_MAX_CONCURRENCY` defaults to 2 and is bounded from 1 through 16; saturation fails immediately as `503 playground_unavailable` with `Retry-After: 1` rather than queueing behind an admission wait. `RUX_PLAYGROUND_TIMEOUT_SECONDS` defaults to 30, must be at least `RUX_REQUEST_TIMEOUT_SECONDS`, and is bounded at 120; that relationship is checked at startup, in the one place both values exist. The endpoint is anonymous, so it additionally requires an exact-match `Origin` and answers `403 origin_not_allowed` otherwise — without it, any page could drive the sandbox from a visitor's browser. `RUX_PLAYGROUND_ENABLED` is false by default, and a disabled playground is not routed at all, so both endpoints answer `404`.
+
+Per-run resource ceilings — memory, CPU, processes, filesystem, and the compile and execute timeouts — are enforced by the container rather than by this middleware, and are documented in [playground](playground.md).
 
 ## Safe diagnostics
 

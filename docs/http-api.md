@@ -72,7 +72,7 @@ Clients use `type` as the primary problem identity, may use `code` as its conven
 
 ## Abuse-control responses
 
-Rate-limited operations return `429` with the stable `rate_limited` problem and an integer `Retry-After` header. Requests that exceed their execution deadline return the stable `504 request_timeout` problem. Publication retains its documented `413 upload_too_large` and `503 publication_unavailable` responses; admission saturation includes `Retry-After: 1`. These responses contain no limiter key, client address, credential, or internal error detail.
+Rate-limited operations return `429` with the stable `rate_limited` problem and an integer `Retry-After` header. Requests that exceed their execution deadline return the stable `504 request_timeout` problem. Publication retains its documented `413 upload_too_large` and `503 publication_unavailable` responses; admission saturation includes `Retry-After: 1`. The playground returns `503 playground_unavailable`, also with `Retry-After: 1`, when the sandbox is not answering or its admission limit is saturated. These responses contain no limiter key, client address, credential, or internal error detail.
 
 ## Browser authentication
 
@@ -271,6 +271,14 @@ Discovery reads are public and unauthenticated. Except for highlights, each coll
 `GET /v1/sitemap` pages through structured `keyword`, `namespace`, and `package` records ordered by kind and normalized identity. Records preserve display spelling, expose normalized path segments, and carry the newest relevant publication timestamp as `last_modified`. They contain source data rather than frontend paths so the static catalog retains ownership of its route scheme. Only identities with published catalog content are included. Yank transitions do not alter sitemap timestamps.
 
 Package lookup failures return `package_not_found`. Persistence failures from any discovery route return `discovery_unavailable`. Discovery responses expose no database identifiers, publisher attribution, storage keys, or download-event details.
+
+## Playground
+
+`POST /v1/playground/run` and `GET /v1/playground/limits` compile and run a submitted program in a throwaway container. Both are anonymous and present only when the playground is enabled; otherwise they answer `404`. The run endpoint requires an exact-match `Origin` and returns `403 origin_not_allowed` without one, because it is unauthenticated and executes code. The limits endpoint is a side-effect-free public document and is not origin-checked.
+
+The run request body is closed and limited to 64 KiB. `source` is required; `mode` is `run`, `build`, or `fmt` and defaults to `run`; `profile` is `debug` or `release` and defaults to `debug`; `stdin` defaults to empty. The response reports `build`, an optional `program` for executed runs, and an optional `formatted` for `fmt`. A **failed compile is a `200`** carrying `build.success: false` with diagnostics — problem responses are reserved for submissions that never ran. Clients branch on `build.success`, not on the status code.
+
+A submission that breaks a documented bound returns `422 invalid_request` with `invalid_playground_request` inside `errors[]`; the detail names a size, bound, or field and never echoes submitted source. A sandbox that is stopped, saturated, or internally broken returns `503 playground_unavailable` with `Retry-After: 1`, and a run exceeding the server deadline returns `504 request_timeout`. The full contract, resource envelope, and container isolation are documented in [playground](playground.md).
 
 ## OpenAPI composition
 

@@ -2,7 +2,7 @@
 
 API releases are immutable, checksum-bound archives produced from a `v`-prefixed SemVer tag contained in `main`. The tag must match the root `rux-server` package version.
 
-Each archive contains the API and pinned SQLx executables under `bin/`, reviewed SQL migrations, `SHA256SUMS`, and schema-1 `release.json`. Frontend files are released independently from the `rux-lang/Web` repository and are never included in an API archive.
+Each archive contains the API, the playground broker, and pinned SQLx executables under `bin/` — `rux-server`, `rux-playgroundd`, and `sqlx` — plus reviewed SQL migrations, `SHA256SUMS`, and schema-1 `release.json`. The broker ships with the API it serves so a deploy moves the pair together; the deploy and rollback playbooks treat it as optional, so rolling back to an archive built before the playground existed still succeeds with that unit stopped. Frontend files are released independently from the `rux-lang/Web` repository and are never included in an API archive.
 
 The release workflow runs the full Rust suite, builds `x86_64-unknown-linux-gnu` artifacts, produces an SPDX SBOM, and creates provenance attestations before publishing immutable draft assets.
 

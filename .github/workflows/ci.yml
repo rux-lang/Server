@@ -15,6 +15,13 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Keep in sync with playground_rux_version / playground_rux_sha256 in
+  # deploy/ansible/group_vars/all.yml. The build refuses to run without the
+  # checksum: it downloads a compiler tarball, and an unverified download is the
+  # one step of the sandbox design a network attacker could turn into arbitrary
+  # code execution inside every later run.
+  PLAYGROUND_RUX_VERSION: "0.3.0"
+  PLAYGROUND_RUX_SHA256: 82e654f9ced042dc029220836d1322b208790099627f32efd9d8d600834be5cc
 
 jobs:
   rust:
@@ -181,6 +188,22 @@ jobs:
           if test -f .performance/api.pid; then kill "$(cat .performance/api.pid)" 2>/dev/null || true; fi
           docker compose down --volumes
 
+  playground:
+    name: Playground sandbox
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Build the pinned sandbox image
+        run: bash deploy/playground/build-image.sh "$PLAYGROUND_RUX_VERSION" "$PLAYGROUND_RUX_SHA256"
+      # Asserts that a specific containment mechanism stopped each fixture - the
+      # compile timeout, the pid limit, the memory limit, the dropped network,
+      # the output cap, the framing - because a sandbox that merely refused
+      # everything would pass a success-only suite.
+      - name: Verify sandbox containment
+        run: bash deploy/playground/test-image.sh "rux-playground:$PLAYGROUND_RUX_VERSION"
+
   smoke:
     name: Integration smoke
     needs: [rust, provisioning, performance-smoke]
@@ -202,6 +225,8 @@ jobs:
       RUX_GITHUB_CALLBACK_URL: http://localhost:8080/v1/auth/github/callback
       RUX_METRICS_BIND_ADDRESS: 0.0.0.0:9464
       RUX_METRICS_ALLOW_NON_LOOPBACK: "true"
+      RUX_PLAYGROUND_ENABLED: "true"
+      RUX_PLAYGROUND_SOCKET: ${{ github.workspace }}/playground.sock
     steps:
       - name: Check out
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -216,6 +241,28 @@ jobs:
           docker run --rm --entrypoint /bin/promtool \
             -v "$PWD/deploy/observability:/work:ro" -w /work \
             prom/prometheus:v3.5.0 test rules alerts.test.yml
+      # Rebuilt here rather than shared from the playground job: moving a ~200 MB
+      # image between jobs costs more than building it again, and the two jobs
+      # then stay independent.
+      - name: Build the pinned sandbox image
+        run: bash deploy/playground/build-image.sh "$PLAYGROUND_RUX_VERSION" "$PLAYGROUND_RUX_SHA256"
+      # Started before the API so the availability watcher finds it on its first
+      # probe. The broker is the only process here that reaches Docker.
+      - name: Start the playground broker
+        run: |
+          export RUX_PLAYGROUND_IMAGE="rux-playground:${PLAYGROUND_RUX_VERSION}"
+          export RUX_PLAYGROUND_JOBS_ROOT="${GITHUB_WORKSPACE}/playground-jobs"
+          mkdir -p "$RUX_PLAYGROUND_JOBS_ROOT"
+          cargo run -p rux-server --bin rux-playgroundd > playgroundd.log 2>&1 &
+          echo $! > playgroundd.pid
+          for _ in {1..90}; do
+            if test -S "$RUX_PLAYGROUND_SOCKET"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat playgroundd.log
+          exit 1
       - name: Start API
         run: |
           cargo run -p rux-server > api.log 2>&1 &
@@ -239,6 +286,39 @@ jobs:
           grep '"postgresql"' ready.json
           grep '"object_storage"' ready.json
           curl --fail --silent http://localhost:8080/openapi/v1.json | grep '"openapi"'
+      # End to end through every hop: HTTP handler, unix socket, broker, and a
+      # real container. The program returns an exit code rather than printing,
+      # because a program that prints has to import Io and the registry the
+      # released compiler resolves packages from does not exist yet, so nothing
+      # can be seeded into the image. Swap this for a hello-world stdout
+      # assertion once seeding works; see docs/playground.md.
+      - name: Verify the playground contract
+        run: |
+          ran=$(curl --fail --silent --show-error \
+            --request POST http://localhost:8080/v1/playground/run \
+            --header 'content-type: application/json' \
+            --header "origin: $RUX_ALLOWED_WEB_ORIGIN" \
+            --data '{"mode":"run","profile":"debug","source":"func Main() -> int {\n    return 0;\n}\n"}')
+          echo "$ran"
+          echo "$ran" | jq -e '.data.build.success == true' > /dev/null
+          echo "$ran" | jq -e '.data.program.exit_code == 0' > /dev/null
+          echo "$ran" | jq -e '.data.program.timed_out == false' > /dev/null
+          # A failed compile is a 200 with diagnostics, never a problem document.
+          broken=$(curl --fail --silent --show-error \
+            --request POST http://localhost:8080/v1/playground/run \
+            --header 'content-type: application/json' \
+            --header "origin: $RUX_ALLOWED_WEB_ORIGIN" \
+            --data '{"mode":"build","source":"func Main( -> int {}\n"}')
+          echo "$broken" | jq -e '.data.build.success == false' > /dev/null
+          echo "$broken" | jq -e '.data.build.diagnostics | length > 0' > /dev/null
+          # Anonymous and executes code, so a missing Origin must be refused.
+          origin_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST http://localhost:8080/v1/playground/run \
+            --header 'content-type: application/json' \
+            --data '{"mode":"build","source":"func Main() -> int {\n    return 0;\n}\n"}')
+          test "$origin_status" = "403"
+          curl --fail --silent http://localhost:8080/v1/playground/limits \
+            | jq -e '.data.max_source_bytes == 32768' > /dev/null
       - name: Verify observability stack
         run: |
           docker compose --profile observability up -d --wait --wait-timeout 120 prometheus grafana
@@ -266,6 +346,18 @@ jobs:
           path: api.log
           if-no-files-found: warn
           retention-days: 7
+      - name: Upload playground broker log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: smoke-playgroundd-log
+          path: playgroundd.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Stop the playground broker
+        if: ${{ always() }}
+        run: |
+          if test -f playgroundd.pid; then kill "$(cat playgroundd.pid)" 2>/dev/null || true; fi
       - name: Stop dependencies
         if: ${{ always() }}
         run: docker compose down --volumes

@@ -13,7 +13,10 @@ Request telemetry uses the server-generated request ID, method, matched route te
 - `rux_http_server_requests_total`, `rux_http_server_request_duration_seconds`, and `rux_http_server_active_requests`.
 - `rux_dependency_ready`, `rux_dependency_probes_total`, `rux_dependency_probe_duration_seconds`, and `rux_dependency_last_probe_unixtime_seconds`.
 - `rux_orphan_cleanup_runs_total`, `rux_orphan_cleanup_duration_seconds`, `rux_orphan_cleanup_objects_total`, and `rux_orphan_cleanup_last_success_unixtime_seconds`.
+- `rux_playground_runs_total`, `rux_playground_duration_seconds`, `rux_playground_active`, and `rux_playground_available`.
 - `rux_postgres_backup_*`, `rux_postgres_backup_check_*`, `rux_postgres_wal_archive_*`, and `rux_recovery_rehearsal_*` are emitted by root-managed recovery jobs rather than the API.
+
+Playground runs are labelled by `mode` (`run`, `build`, `fmt`) and `outcome` (`succeeded`, `build_failed`, `rejected`, `unavailable`, `timed_out`, `internal`). Both are fixed vocabularies: nothing derived from the submission or the caller is ever a label, so the series cannot be made to grow without bound and cannot carry submitted source. `rux_playground_active` is driven by a guard that decrements on every exit path, including a cancelled request, so it cannot drift upward under the load that makes it worth having. `rux_playground_available` reports whether the broker answered its most recent probe and is deliberately **not** part of the readiness aggregate — a stopped sandbox is a degraded playground, not a degraded registry, and must never pull the registry out of rotation. The whole family is absent when `RUX_PLAYGROUND_ENABLED` is false, because the watcher never starts.
 
 The request histogram also enforces the launch [performance budgets](performance.md) through traffic-gated warning alerts for successful public reads, search, and publication. The minimum request counts prevent sparse traffic from producing unstable quantiles; database size and frontend budgets remain explicit release and CI checks rather than runtime metric families.
 

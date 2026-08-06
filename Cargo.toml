@@ -1,6 +1,11 @@
 [package]
 name = "rux-server"
 description = "Server-side Rux services: package registry, playground, language tooling, and chat integrations"
+# The package ships two binaries - the API and the playground broker - so
+# `cargo run -p rux-server` is ambiguous without this. Every documented local
+# and CI command names the API, so it is the default; the broker is reached
+# with an explicit `--bin rux-playgroundd`.
+default-run = "rux-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
