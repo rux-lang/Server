@@ -48,6 +48,7 @@ use crate::contract::{Problem, ProblemResponse, ValidationError};
         crate::discovery::package_dependents,
         crate::discovery::keywords,
         crate::discovery::package_versions,
+        crate::discovery::package_download_statistics,
         crate::discovery::highlights,
         crate::discovery::sitemap,
         crate::yanks::set_yank_state,
@@ -111,6 +112,8 @@ use crate::contract::{Problem, ProblemResponse, ValidationError};
         crate::discovery::VersionsResponse,
         crate::discovery::HighlightPackageDocument,
         crate::discovery::HighlightsDocument,
+        crate::discovery::PackageDownloadDayDocument,
+        crate::discovery::PackageDownloadStatisticsDocument,
         crate::discovery::SitemapEntryDocument,
         crate::discovery::SitemapResponse,
         crate::yanks::SetYankStateRequest,
@@ -477,6 +480,23 @@ mod tests {
                 assert!(operation["responses"].get(status).is_some());
             }
         }
+
+        let statistics = &document["paths"]["/packages/{namespace}/{package}/downloads"]["get"];
+        assert!(statistics.is_object());
+        for status in ["200", "404", "422", "503"] {
+            assert!(statistics["responses"].get(status).is_some());
+        }
+        let schemas = &document["components"]["schemas"];
+        for schema in [
+            "PackageDownloadDayDocument",
+            "PackageDownloadStatisticsDocument",
+        ] {
+            assert!(schemas.get(schema).is_some(), "missing {schema} schema");
+        }
+        assert_eq!(
+            schemas["PackageDownloadDayDocument"]["properties"]["date"]["format"],
+            "date"
+        );
     }
 
     fn assert_playground_contract(document: &Value) {

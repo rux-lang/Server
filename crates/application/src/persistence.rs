@@ -4,7 +4,7 @@ use std::fmt;
 use async_trait::async_trait;
 use rux_domain::{IdentitySegment, SemanticVersion, VersionRange};
 use serde_json::{Map, Value};
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 macro_rules! identifier {
@@ -450,6 +450,21 @@ pub struct PackageHighlightsRecord {
     pub popular: Vec<HighlightPackageRecord>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageDownloadDayRecord {
+    pub date: Date,
+    pub downloads: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageDownloadStatisticsRecord {
+    pub start_date: Date,
+    pub end_date: Date,
+    pub total_downloads: u64,
+    pub total_all_time: u64,
+    pub daily: Vec<PackageDownloadDayRecord>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum SitemapEntryKind {
     Keyword,
@@ -687,6 +702,14 @@ pub trait DiscoveryReader: Send + Sync {
         until: OffsetDateTime,
         limit: u16,
     ) -> Result<PackageHighlightsRecord, RepositoryError>;
+
+    async fn package_download_statistics(
+        &self,
+        namespace: &IdentitySegment,
+        package: &IdentitySegment,
+        since: OffsetDateTime,
+        until: OffsetDateTime,
+    ) -> Result<Option<PackageDownloadStatisticsRecord>, RepositoryError>;
 
     async fn sitemap_entries(
         &self,

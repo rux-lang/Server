@@ -11,21 +11,21 @@ use rux_application::{
     InvitationResolution, KeywordBoundary, KeywordRecord, NamespaceId, NamespaceInvitationRecord,
     NamespaceMemberRecord, NamespaceMembershipRecord, NamespaceOwnerRecord, NamespaceReader,
     NamespaceRecord, NamespaceRole, NamespaceWriter, NewApiToken, NewInvitation, NewPackageVersion,
-    NewSession, PackageHighlightsRecord, PackageId, PackageIdentityBoundary, PackageKind,
-    PackageMetadataReader, PackageRecord, PackageSearchBoundary, PackageSearchCriteria,
-    PackageSearchReader, PackageSearchRecord, PackageSummaryRecord, PackageVersionHistoryRecord,
-    PackageVersionId, PackageVersionMetadataRecord, PackageVersionRecord, RegistryTransaction,
-    RepositoryConflict, RepositoryError, RepositoryErrorKind, ResolverIndexReader,
-    ResolverIndexRecord, ResolverVersionRecord, SecretHash, SessionId, SessionRecord,
-    SitemapBoundary, SitemapEntryKind, SitemapEntryRecord, TokenAuthorizationTransaction,
-    TokenReader, TokenScope, TokenTransaction, TokenUnitOfWork, TokenWriter, TransactionReader,
-    UnitOfWork, UserId, UserRecord, WriteOutcome,
+    NewSession, PackageDownloadDayRecord, PackageDownloadStatisticsRecord, PackageHighlightsRecord,
+    PackageId, PackageIdentityBoundary, PackageKind, PackageMetadataReader, PackageRecord,
+    PackageSearchBoundary, PackageSearchCriteria, PackageSearchReader, PackageSearchRecord,
+    PackageSummaryRecord, PackageVersionHistoryRecord, PackageVersionId,
+    PackageVersionMetadataRecord, PackageVersionRecord, RegistryTransaction, RepositoryConflict,
+    RepositoryError, RepositoryErrorKind, ResolverIndexReader, ResolverIndexRecord,
+    ResolverVersionRecord, SecretHash, SessionId, SessionRecord, SitemapBoundary, SitemapEntryKind,
+    SitemapEntryRecord, TokenAuthorizationTransaction, TokenReader, TokenScope, TokenTransaction,
+    TokenUnitOfWork, TokenWriter, TransactionReader, UnitOfWork, UserId, UserRecord, WriteOutcome,
 };
 use rux_domain::{IdentitySegment, SemanticVersion, VersionRange};
 use serde_json::Value;
 use sqlx::{FromRow, PgPool, Postgres, Row, Transaction, query, query_as, query_scalar};
 use thiserror::Error;
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -365,6 +365,14 @@ struct HighlightPackageRow {
     description: Option<String>,
     published_at: OffsetDateTime,
     downloads: Option<i64>,
+}
+
+#[derive(FromRow)]
+struct PackageDownloadDayRow {
+    date: Date,
+    downloads: i64,
+    total_downloads: i64,
+    total_all_time: i64,
 }
 
 #[derive(FromRow)]
@@ -2012,6 +2020,88 @@ impl DiscoveryReader for PostgresRepository {
                 .map(highlight_package_record)
                 .collect::<Result<_, _>>()?,
         })
+    }
+
+    async fn package_download_statistics(
+        &self,
+        namespace: &IdentitySegment,
+        package: &IdentitySegment,
+        since: OffsetDateTime,
+        until: OffsetDateTime,
+    ) -> Result<Option<PackageDownloadStatisticsRecord>, RepositoryError> {
+        if !self.package_exists(namespace, package).await? {
+            return Ok(None);
+        }
+        let rows = query_as::<_, PackageDownloadDayRow>(
+            "WITH target AS (
+                 SELECT p.id
+                 FROM packages p
+                 JOIN namespaces n ON n.id = p.namespace_id
+                 WHERE n.normalized_name = $1 AND p.normalized_name = $2
+             ), days AS (
+                 SELECT generate_series($3, $4 - INTERVAL '1 day', INTERVAL '1 day') AS day
+             ), daily AS (
+                 SELECT (event.occurred_at AT TIME ZONE 'UTC')::DATE AS date,
+                        count(*)::BIGINT AS downloads
+                 FROM package_versions version
+                 JOIN download_events event ON event.package_version_id = version.id
+                 WHERE version.package_id = (SELECT id FROM target)
+                   AND event.occurred_at >= $3
+                   AND event.occurred_at < $4
+                 GROUP BY (event.occurred_at AT TIME ZONE 'UTC')::DATE
+             ), totals AS (
+                 SELECT count(*) FILTER (
+                            WHERE event.occurred_at >= $3
+                        )::BIGINT AS total_downloads,
+                        count(*)::BIGINT AS total_all_time
+                 FROM package_versions version
+                 JOIN download_events event ON event.package_version_id = version.id
+                 WHERE version.package_id = (SELECT id FROM target)
+                   AND event.occurred_at < $4
+             )
+             SELECT (days.day AT TIME ZONE 'UTC')::DATE AS date,
+                    coalesce(daily.downloads, 0)::BIGINT AS downloads,
+                    totals.total_downloads,
+                    totals.total_all_time
+             FROM days
+             CROSS JOIN totals
+             LEFT JOIN daily ON daily.date = (days.day AT TIME ZONE 'UTC')::DATE
+             ORDER BY date",
+        )
+        .bind(namespace.normalized())
+        .bind(package.normalized())
+        .bind(since)
+        .bind(until)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        let first = rows
+            .first()
+            .ok_or_else(|| data_error("download statistics returned no daily buckets"))?;
+        let total_downloads = nonnegative_u64(first.total_downloads, "package download total")?;
+        let total_all_time =
+            nonnegative_u64(first.total_all_time, "all-time package download total")?;
+        let start_date = first.date;
+        let end_date = rows
+            .last()
+            .expect("a non-empty daily series has a final bucket")
+            .date;
+        let daily = rows
+            .into_iter()
+            .map(|row| {
+                Ok(PackageDownloadDayRecord {
+                    date: row.date,
+                    downloads: nonnegative_u64(row.downloads, "daily package download count")?,
+                })
+            })
+            .collect::<Result<_, RepositoryError>>()?;
+        Ok(Some(PackageDownloadStatisticsRecord {
+            start_date,
+            end_date,
+            total_downloads,
+            total_all_time,
+            daily,
+        }))
     }
 
     async fn sitemap_entries(

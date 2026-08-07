@@ -183,13 +183,15 @@ Yanking affects new resolver selection only. The exact metadata route exposes th
 
 Package downloads are public and unauthenticated. `GET /v1/packages/{namespace}/{package}/{version}/download` resolves one known exact version, appends and commits a durable download event, then returns `307 Temporary Redirect` with an absolute configured CDN `Location`. The response has an empty body and `Cache-Control: no-store`, ensuring later GET requests continue through registry accounting rather than reusing a cached redirect.
 
+`GET /v1/packages/{namespace}/{package}/downloads` is the public, side-effect-free package statistics view. It aggregates all versions, including yanked releases, over the thirty complete UTC calendar days ending yesterday. The standard data envelope contains `window_days`, inclusive `start_date` and `end_date` values, `total_downloads` for that window, `total_all_time` through the same cutoff, and exactly thirty ordered `daily` rows containing an ISO 8601 date and count. Dates without events are retained with zero counts. The endpoint accepts no query parameters and never returns individual events or actor information.
+
 The API records the event before returning the redirect. A lookup, transaction, insert, or commit failure returns `download_unavailable` and does not return a CDN location. Each successful GET is one event; it measures a registry download request rather than completion of the subsequent CDN transfer. The route does not probe object storage in the request path.
 
 `HEAD` on the same route resolves and redirects to the same target without recording an event. Known yanked versions remain downloadable by GET and HEAD; yanking affects new resolver selection rather than immutable stored bytes.
 
 The CDN destination is constructed by appending the version's immutable storage key to `RUX_PACKAGE_CDN_BASE_URL`. That startup-validated base must be an absolute hierarchical URL ending in `/`, without credentials, a query, or a fragment, and must use HTTPS except for loopback development.
 
-Invalid namespace, package, and version values return `invalid_request` with a source pointer. An unknown exact version returns `package_version_not_found`. Database failures return `download_unavailable`. No download response serializes database or actor identifiers.
+Invalid namespace, package, and version values return `invalid_request` with a source pointer. An unknown exact version returns `package_version_not_found`; a missing package statistics target returns `package_not_found`. Database failures on redirects return `download_unavailable`, while statistics reads use `discovery_unavailable`. No download response serializes database or actor identifiers.
 
 ## Resolver index
 

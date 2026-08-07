@@ -4,10 +4,10 @@ use uuid::Uuid;
 
 use rux_application::{
     AccountReader, AccountUnitOfWork, ApiTokenService, ApiTokens, ArtifactReferenceReader,
-    ArtifactSha256, AuditActor, AuditEvent, CatalogReader, DependencyRecord, DownloadReader,
-    DownloadUnitOfWork, GitHubUserProfile, InvitationResolution, IssueApiToken, NamespaceReader,
-    NamespaceRole, NewApiToken, NewInvitation, NewPackageVersion, NewSession, PackageId,
-    PackageKind, PackageMetadataReader, RepositoryConflict, RepositoryErrorKind,
+    ArtifactSha256, AuditActor, AuditEvent, CatalogReader, DependencyRecord, DiscoveryReader,
+    DownloadReader, DownloadUnitOfWork, GitHubUserProfile, InvitationResolution, IssueApiToken,
+    NamespaceReader, NamespaceRole, NewApiToken, NewInvitation, NewPackageVersion, NewSession,
+    PackageId, PackageKind, PackageMetadataReader, RepositoryConflict, RepositoryErrorKind,
     ResolverIndexReader, SecretHash, TokenReader, TokenScope, UnitOfWork, WriteOutcome,
     YankErrorKind, YankService, Yanks,
 };
@@ -427,6 +427,83 @@ async fn complete_package_version_aggregate_round_trips(pool: PgPool) -> TestRes
             .fetch_one(&pool)
             .await?,
         2
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn package_download_statistics_fill_daily_buckets_across_versions(
+    pool: PgPool,
+) -> TestResult {
+    let repository = PostgresRepository::new(pool);
+    let publisher = committed_user(&repository, profile(305, "Statistics-Publisher")).await?;
+    let until = OffsetDateTime::UNIX_EPOCH + Duration::days(100);
+    let since = until - Duration::days(30);
+
+    let mut transaction = repository.begin().await?;
+    let namespace = transaction
+        .create_namespace(&identity("Statistics"), Some(publisher.id))
+        .await?;
+    let package = transaction
+        .create_package(namespace.id, &identity("Chart_Pkg"), Some(publisher.id))
+        .await?;
+    let first = transaction
+        .create_package_version(&resolver_package_version(
+            package.id,
+            "1.0.0",
+            31,
+            Vec::new(),
+        ))
+        .await?;
+    let second = transaction
+        .create_package_version(&resolver_package_version(
+            package.id,
+            "2.0.0",
+            32,
+            Vec::new(),
+        ))
+        .await?;
+    transaction
+        .set_yank(second.id, Some((OffsetDateTime::now_utc(), publisher.id)))
+        .await?;
+    for (version_id, occurred_at) in [
+        (first.id, since - Duration::days(1)),
+        (first.id, since),
+        (second.id, since + Duration::days(10)),
+        (second.id, since + Duration::days(10) + Duration::hours(2)),
+        (first.id, until),
+    ] {
+        transaction.append_download(version_id, occurred_at).await?;
+    }
+    transaction.commit().await?;
+
+    let statistics = repository
+        .package_download_statistics(
+            &identity("statistics"),
+            &identity("chart-pkg"),
+            since,
+            until,
+        )
+        .await?
+        .expect("package statistics");
+    assert_eq!(statistics.start_date, since.date());
+    assert_eq!(statistics.end_date, (until - Duration::days(1)).date());
+    assert_eq!(statistics.total_downloads, 3);
+    assert_eq!(statistics.total_all_time, 4);
+    assert_eq!(statistics.daily.len(), 30);
+    assert_eq!(statistics.daily[0].downloads, 1);
+    assert_eq!(statistics.daily[10].downloads, 2);
+    assert_eq!(statistics.daily[29].downloads, 0);
+    assert!(
+        repository
+            .package_download_statistics(
+                &identity("statistics"),
+                &identity("missing"),
+                since,
+                until,
+            )
+            .await?
+            .is_none()
     );
     Ok(())
 }

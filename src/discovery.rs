@@ -7,8 +7,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use rux_application::{
-    DependentPackageRecord, Discovery, DiscoveryErrorKind, DiscoveryPageParameters,
-    HighlightPackageRecord, KeywordRecord, POPULARITY_WINDOW_DAYS, PackageVersionHistoryRecord,
+    DOWNLOAD_STATISTICS_WINDOW_DAYS, DependentPackageRecord, Discovery, DiscoveryErrorKind,
+    DiscoveryPageParameters, HighlightPackageRecord, KeywordRecord, POPULARITY_WINDOW_DAYS,
+    PackageDownloadDayRecord, PackageDownloadStatisticsRecord, PackageVersionHistoryRecord,
     SitemapEntryKind, SitemapEntryRecord,
 };
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,10 @@ pub fn router(discovery: Arc<dyn Discovery>) -> Router {
         .route(
             "/v1/packages/{namespace}/{package}/versions",
             get(package_versions),
+        )
+        .route(
+            "/v1/packages/{namespace}/{package}/downloads",
+            get(package_download_statistics),
         )
         .route("/v1/keywords", get(keywords))
         .route("/v1/highlights", get(highlights))
@@ -153,6 +158,27 @@ pub(crate) struct HighlightsDocument {
     window_days: i64,
     recent: Vec<HighlightPackageDocument>,
     popular: Vec<HighlightPackageDocument>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct PackageDownloadDayDocument {
+    #[schema(format = "date")]
+    date: String,
+    downloads: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct PackageDownloadStatisticsDocument {
+    window_days: i64,
+    #[schema(format = "date")]
+    start_date: String,
+    #[schema(format = "date")]
+    end_date: String,
+    total_downloads: u64,
+    total_all_time: u64,
+    daily: Vec<PackageDownloadDayDocument>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -326,6 +352,40 @@ pub(crate) async fn highlights(
 
 #[utoipa::path(
     get,
+    path = "/packages/{namespace}/{package}/downloads",
+    params(
+        ("namespace" = String, Path, description = "Registry namespace identity"),
+        ("package" = String, Path, description = "Package identity")
+    ),
+    responses(
+        (status = 200, description = "Thirty complete UTC days of package downloads across all versions", body = DataEnvelope<PackageDownloadStatisticsDocument>),
+        (status = 404, response = ProblemResponse),
+        (status = 422, response = ProblemResponse),
+        (status = 503, response = ProblemResponse)
+    )
+)]
+pub(crate) async fn package_download_statistics(
+    State(state): State<DiscoveryState>,
+    Path((namespace, package)): Path<(String, String)>,
+    query: Result<Query<EmptyQuery>, QueryRejection>,
+) -> Response {
+    if query.is_err() {
+        return malformed_query_problem().into_response();
+    }
+    match state
+        .discovery
+        .download_statistics(&namespace, &package)
+        .await
+    {
+        Ok(statistics) => {
+            Json(DataEnvelope::new(download_statistics_document(&statistics))).into_response()
+        }
+        Err(error) => discovery_problem(error.kind(), false).into_response(),
+    }
+}
+
+#[utoipa::path(
+    get,
     path = "/sitemap",
     params(SitemapQuery),
     responses(
@@ -443,6 +503,26 @@ fn highlight_document(record: &HighlightPackageRecord) -> HighlightPackageDocume
     }
 }
 
+fn download_statistics_document(
+    record: &PackageDownloadStatisticsRecord,
+) -> PackageDownloadStatisticsDocument {
+    PackageDownloadStatisticsDocument {
+        window_days: DOWNLOAD_STATISTICS_WINDOW_DAYS,
+        start_date: record.start_date.to_string(),
+        end_date: record.end_date.to_string(),
+        total_downloads: record.total_downloads,
+        total_all_time: record.total_all_time,
+        daily: record.daily.iter().map(download_day_document).collect(),
+    }
+}
+
+fn download_day_document(record: &PackageDownloadDayRecord) -> PackageDownloadDayDocument {
+    PackageDownloadDayDocument {
+        date: record.date.to_string(),
+        downloads: record.downloads,
+    }
+}
+
 fn sitemap_document(record: &SitemapEntryRecord) -> SitemapEntryDocument {
     match record.kind {
         SitemapEntryKind::Keyword => {
@@ -546,7 +626,8 @@ mod tests {
     use axum::http::Request;
     use rux_application::{
         DependencyRecord, DiscoveryError, DiscoveryPage, HighlightPackageRecord, KeywordRecord,
-        PackageHighlightsRecord, PackageKind, PackageVersionHistoryRecord, SitemapEntryRecord,
+        PackageDownloadDayRecord, PackageDownloadStatisticsRecord, PackageHighlightsRecord,
+        PackageKind, PackageVersionHistoryRecord, SitemapEntryRecord,
     };
     use rux_domain::{IdentitySegment, SemanticVersion, VersionRange};
     use serde_json::{Value, json};
@@ -629,6 +710,31 @@ mod tests {
             })
         }
 
+        async fn download_statistics(
+            &self,
+            _namespace: &str,
+            _package: &str,
+        ) -> Result<PackageDownloadStatisticsRecord, DiscoveryError> {
+            self.fail()?;
+            let start_date = OffsetDateTime::UNIX_EPOCH.date();
+            Ok(PackageDownloadStatisticsRecord {
+                start_date,
+                end_date: start_date + time::Duration::days(29),
+                total_downloads: 12,
+                total_all_time: 42,
+                daily: vec![
+                    PackageDownloadDayRecord {
+                        date: start_date,
+                        downloads: 5,
+                    },
+                    PackageDownloadDayRecord {
+                        date: start_date + time::Duration::days(1),
+                        downloads: 7,
+                    },
+                ],
+            })
+        }
+
         async fn sitemap(
             &self,
             _parameters: DiscoveryPageParameters,
@@ -705,6 +811,31 @@ mod tests {
                 "package": "Json",
                 "normalized_package": "json",
                 "last_modified": "1970-01-01T00:00:00Z"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn download_statistics_expose_package_wide_daily_totals() {
+        let response = test_router(None)
+            .oneshot(request("/v1/packages/rux/json/downloads"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await,
+            json!({
+                "data": {
+                    "window_days": 30,
+                    "start_date": "1970-01-01",
+                    "end_date": "1970-01-30",
+                    "total_downloads": 12,
+                    "total_all_time": 42,
+                    "daily": [
+                        {"date": "1970-01-01", "downloads": 5},
+                        {"date": "1970-01-02", "downloads": 7}
+                    ]
+                }
             })
         );
     }

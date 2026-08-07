@@ -7,12 +7,12 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rux_domain::{IdentitySegment, SemanticVersion};
 use sha2::{Digest, Sha256};
-use time::Duration;
+use time::{Duration, Time, UtcOffset};
 
 use crate::{
     Clock, DependentPackageRecord, DiscoveryReader, KeywordBoundary, KeywordRecord,
-    PackageHighlightsRecord, PackageIdentityBoundary, PackageVersionHistoryRecord, SitemapBoundary,
-    SitemapEntryKind, SitemapEntryRecord,
+    PackageDownloadStatisticsRecord, PackageHighlightsRecord, PackageIdentityBoundary,
+    PackageVersionHistoryRecord, SitemapBoundary, SitemapEntryKind, SitemapEntryRecord,
 };
 
 pub const DEFAULT_DISCOVERY_LIMIT: u16 = 20;
@@ -21,6 +21,7 @@ pub const DEFAULT_SITEMAP_LIMIT: u16 = 100;
 pub const MAX_SITEMAP_LIMIT: u16 = 1_000;
 pub const HIGHLIGHT_LIMIT: u16 = 10;
 pub const POPULARITY_WINDOW_DAYS: i64 = 30;
+pub const DOWNLOAD_STATISTICS_WINDOW_DAYS: i64 = 30;
 
 const CURSOR_VERSION: u8 = 1;
 const MAX_CURSOR_BYTES: usize = 512;
@@ -94,6 +95,12 @@ pub trait Discovery: Send + Sync {
     ) -> Result<DiscoveryPage<PackageVersionHistoryRecord>, DiscoveryError>;
 
     async fn highlights(&self) -> Result<PackageHighlightsRecord, DiscoveryError>;
+
+    async fn download_statistics(
+        &self,
+        namespace: &str,
+        package: &str,
+    ) -> Result<PackageDownloadStatisticsRecord, DiscoveryError>;
 
     async fn sitemap(
         &self,
@@ -250,6 +257,26 @@ impl Discovery for DiscoveryService {
             .package_highlights(since, until, HIGHLIGHT_LIMIT)
             .await
             .map_err(|_| unavailable())
+    }
+
+    async fn download_statistics(
+        &self,
+        namespace: &str,
+        package: &str,
+    ) -> Result<PackageDownloadStatisticsRecord, DiscoveryError> {
+        let namespace = parse_identity(namespace, DiscoveryErrorKind::InvalidNamespace)?;
+        let package = parse_identity(package, DiscoveryErrorKind::InvalidPackage)?;
+        let until = self
+            .clock
+            .now()
+            .to_offset(UtcOffset::UTC)
+            .replace_time(Time::MIDNIGHT);
+        let since = until - Duration::days(DOWNLOAD_STATISTICS_WINDOW_DAYS);
+        self.repository
+            .package_download_statistics(&namespace, &package, since, until)
+            .await
+            .map_err(|_| unavailable())?
+            .ok_or_else(|| DiscoveryError::new(DiscoveryErrorKind::PackageNotFound))
     }
 
     async fn sitemap(
@@ -539,6 +566,7 @@ mod tests {
         dependent_items: Vec<DependentPackageRecord>,
         version_items: Vec<PackageVersionHistoryRecord>,
         highlight_window: Mutex<Option<(OffsetDateTime, OffsetDateTime, u16)>>,
+        download_window: Mutex<Option<(OffsetDateTime, OffsetDateTime)>>,
     }
 
     #[async_trait]
@@ -579,6 +607,23 @@ mod tests {
         ) -> Result<PackageHighlightsRecord, RepositoryError> {
             *self.highlight_window.lock().unwrap() = Some((since, until, limit));
             Ok(PackageHighlightsRecord::default())
+        }
+
+        async fn package_download_statistics(
+            &self,
+            _namespace: &IdentitySegment,
+            _package: &IdentitySegment,
+            since: OffsetDateTime,
+            until: OffsetDateTime,
+        ) -> Result<Option<PackageDownloadStatisticsRecord>, RepositoryError> {
+            *self.download_window.lock().unwrap() = Some((since, until));
+            Ok(Some(PackageDownloadStatisticsRecord {
+                start_date: since.date(),
+                end_date: (until - Duration::days(1)).date(),
+                total_downloads: 0,
+                total_all_time: 0,
+                daily: Vec::new(),
+            }))
         }
 
         async fn sitemap_entries(
@@ -676,6 +721,21 @@ mod tests {
         assert_eq!(until.unix_timestamp(), 1_785_672_000);
         assert_eq!(since.unix_timestamp(), 1_783_080_000);
         assert_eq!(limit, HIGHLIGHT_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn download_statistics_use_thirty_complete_utc_days() {
+        let reader = Arc::new(StubReader::default());
+        let service = DiscoveryService::new(reader.clone(), Arc::new(FixedClock));
+        service.download_statistics("Rux", "Json").await.unwrap();
+        let (since, until) = reader.download_window.lock().unwrap().unwrap();
+        assert_eq!(until.hour(), 0);
+        assert_eq!(until.minute(), 0);
+        assert_eq!(until.second(), 0);
+        assert_eq!(
+            until - since,
+            Duration::days(DOWNLOAD_STATISTICS_WINDOW_DAYS)
+        );
     }
 
     fn dependent(package: &str) -> DependentPackageRecord {
