@@ -166,6 +166,15 @@ impl<'source> Parser<'source> {
             return;
         }
 
+        if manifest.header().min_rux().is_none() {
+            self.push(
+                ManifestErrorCode::MissingField,
+                path(&["Manifest", "MinRux"]),
+                root.get("Manifest").and_then(Item::span),
+                "publication requires Manifest.MinRux",
+            );
+        }
+
         match manifest.kind() {
             ManifestKind::Workspace(_) => self.push(
                 ManifestErrorCode::NotPublishable,
@@ -252,15 +261,21 @@ impl<'source> Parser<'source> {
             }
         });
 
-        let min_rux = self
-            .required_string(table, "MinRux", &["Manifest"])
-            .and_then(|(value, span)| {
-                self.parse_semantic_version(
-                    value,
-                    span,
-                    &["Manifest", "MinRux"],
-                    MANIFEST_MAX_SEMANTIC_VERSION_BYTES,
-                )
+        // MinRux is optional for a locally-built package and required for
+        // publication, which `validate_profile` enforces. A declared value is
+        // held to the floor either way.
+        let min_rux = table
+            .get("MinRux")
+            .and_then(|item| {
+                self.item_string(item, &["Manifest", "MinRux"])
+                    .and_then(|(value, span)| {
+                        self.parse_semantic_version(
+                            value,
+                            span,
+                            &["Manifest", "MinRux"],
+                            MANIFEST_MAX_SEMANTIC_VERSION_BYTES,
+                        )
+                    })
             })
             .and_then(|value| {
                 let floor = SemanticVersion::new(MANIFEST_MIN_RUX_VERSION)
@@ -278,9 +293,7 @@ impl<'source> Parser<'source> {
                 }
             });
 
-        version
-            .zip(min_rux)
-            .map(|(version, min_rux)| ManifestHeader::new(version, min_rux))
+        version.map(|version| ManifestHeader::new(version, min_rux))
     }
 
     fn parse_package(&mut self, root: &Table, item: &Item) -> Option<PackageManifest> {

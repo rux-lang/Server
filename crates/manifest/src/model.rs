@@ -28,9 +28,13 @@ impl Manifest {
     }
 
     /// Reports whether `compiler_version` satisfies this manifest's minimum.
+    ///
+    /// A manifest that declares no minimum is supported by every compiler.
     #[must_use]
     pub fn is_supported_by(&self, compiler_version: &SemanticVersion) -> bool {
-        compiler_version.cmp_precedence(self.header.min_rux()) != std::cmp::Ordering::Less
+        self.header.min_rux().is_none_or(|minimum| {
+            compiler_version.cmp_precedence(minimum) != std::cmp::Ordering::Less
+        })
     }
 }
 
@@ -38,11 +42,11 @@ impl Manifest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestHeader {
     version: u16,
-    min_rux: SemanticVersion,
+    min_rux: Option<SemanticVersion>,
 }
 
 impl ManifestHeader {
-    pub(crate) fn new(version: u16, min_rux: SemanticVersion) -> Self {
+    pub(crate) fn new(version: u16, min_rux: Option<SemanticVersion>) -> Self {
         Self { version, min_rux }
     }
 
@@ -53,9 +57,14 @@ impl ManifestHeader {
     }
 
     /// Returns the minimum compatible Rux compiler version.
+    ///
+    /// The field is optional for a locally-built package and required for
+    /// publication, so a manifest accepted by
+    /// [`ValidationProfile::Publication`](crate::ValidationProfile) always
+    /// carries one.
     #[must_use]
-    pub fn min_rux(&self) -> &SemanticVersion {
-        &self.min_rux
+    pub fn min_rux(&self) -> Option<&SemanticVersion> {
+        self.min_rux.as_ref()
     }
 }
 

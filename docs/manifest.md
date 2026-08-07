@@ -51,7 +51,7 @@ Output = "Dist"
 Tracing = false
 ```
 
-`Manifest.Version` is an integer schema version. Version 1 requires `Manifest.MinRux` to be a strict semantic version with precedence greater than or equal to `0.4.0`. Build metadata does not affect that comparison.
+`Manifest.Version` is an integer schema version. `Manifest.MinRux` is optional for local validation and required by the publication profile, so a locally-built or repository test package need not carry a field only publication uses. When present it is a strict semantic version with precedence greater than or equal to `0.4.0`; build metadata does not affect that comparison. A manifest that declares no minimum is supported by every compiler version.
 
 A package requires `Name`, `Version`, and `Type`. `Namespace` is optional for local validation and required by the publication profile. Names and namespaces use registry identity-segment rules, and versions use the registry's strict SemVer rules. `Type` is exactly one of:
 
@@ -85,7 +85,7 @@ A manifest contains exactly one of `Package` or `Workspace`. Workspace package p
 
 ## Validation profiles
 
-Callers select validation policy; the selected profile is not stored in `Rux.toml`. Local validation accepts package and workspace manifests, allows a package to omit `Namespace`, and permits path dependencies. Publication validation accepts only package manifests with `Namespace` and rejects every path dependency. Publication failures use the same stable, source-located, deterministically ordered diagnostics as schema failures.
+Callers select validation policy; the selected profile is not stored in `Rux.toml`. Local validation accepts package and workspace manifests, allows a manifest to omit `Manifest.MinRux` and a package to omit `Namespace`, and permits path dependencies. Publication validation accepts only package manifests carrying both `Manifest.MinRux` and `Package.Namespace`, and rejects every path dependency. Publication failures use the same stable, source-located, deterministically ordered diagnostics as schema failures.
 
 ## Build modes
 

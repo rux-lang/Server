@@ -173,7 +173,7 @@ fn publication_metadata(
         package: package.name().clone(),
         version: package.version().clone(),
         manifest_schema_version: manifest.header().version(),
-        min_rux: manifest.header().min_rux().clone(),
+        min_rux: manifest.header().min_rux()?.clone(),
         package_type: package_kind(package.package_type()),
         description: package.description().map(str::to_owned),
         repository_url: package.repository().map(|value| value.as_str().to_owned()),
@@ -289,7 +289,11 @@ fn normalized_manifest(manifest: &Manifest, package: &PackageManifest) -> JsonOb
         "manifest".into(),
         json!({
             "version": manifest.header().version(),
-            "min_rux": manifest.header().min_rux().as_str(),
+            "min_rux": manifest
+                .header()
+                .min_rux()
+                .expect("publication requires a minimum Rux version")
+                .as_str(),
         }),
     );
     root.insert("package".into(), Value::Object(package_json));

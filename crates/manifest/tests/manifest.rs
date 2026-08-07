@@ -58,7 +58,7 @@ Channel = "Stable"
 
     let manifest = parse_manifest(source).expect("complete manifest should parse");
     assert_eq!(manifest.header().version(), 1);
-    assert_eq!(manifest.header().min_rux().as_str(), "0.4.0");
+    assert_eq!(manifest.header().min_rux(), Some(&version("0.4.0")));
     assert!(manifest.is_supported_by(&version("0.4.0")));
     assert!(!manifest.is_supported_by(&version("0.4.0-alpha")));
 
@@ -256,18 +256,37 @@ LocalUtil = {{ Path = "../Util" }}
 }
 
 #[test]
-fn min_rux_is_required_and_cannot_predate_manifest_v1() {
+fn min_rux_cannot_predate_manifest_v1() {
     let package = "\n[Package]\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"Source\"\n";
     for minimum in ["0.3.99", "0.4.0-alpha.1"] {
         let source = format!("[Manifest]\nVersion = 1\nMinRux = \"{minimum}\"\n{package}");
         assert_eq!(codes(&source), vec![ManifestErrorCode::MinimumRuxTooOld]);
     }
 
-    let source = format!("[Manifest]\nVersion = 1\n{package}");
-    assert_eq!(codes(&source), vec![ManifestErrorCode::MissingField]);
-
+    // Build metadata does not affect the floor comparison.
     let source = format!("[Manifest]\nVersion = 1\nMinRux = \"0.4.0+local\"\n{package}");
     assert!(parse_manifest(&source).is_ok());
+}
+
+#[test]
+fn min_rux_is_optional_locally_and_required_for_publication() {
+    let package = "\n[Package]\nNamespace = \"Rux\"\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"Source\"\n";
+    let source = format!("[Manifest]\nVersion = 1\n{package}");
+
+    // A locally-built package need not carry a field only publication uses,
+    // and no declared minimum means every compiler version is supported.
+    let manifest = parse_manifest(&source).expect("MinRux is optional for local validation");
+    assert!(manifest.header().min_rux().is_none());
+    assert!(manifest.is_supported_by(&version("0.1.0")));
+
+    let errors = parse_manifest_with_profile(&source, ValidationProfile::Publication)
+        .expect_err("publication requires MinRux");
+    let error = &errors.as_slice()[0];
+    assert_eq!(errors.as_slice().len(), 1);
+    assert_eq!(error.code(), ManifestErrorCode::MissingField);
+    assert_eq!(error.path(), &["Manifest", "MinRux"]);
+    assert_eq!(error.message(), "publication requires Manifest.MinRux");
+    assert_eq!(error.span().start().line(), 1);
 }
 
 #[test]
