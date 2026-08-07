@@ -83,7 +83,7 @@ docker compose --profile tools run --rm catalog-seed
 
 The opt-in `catalog-seed` service waits for PostgreSQL, runs `deploy/local/local-catalog.sql` with stop-on-error behavior, and removes its one-shot container afterward. The `tools` profile keeps it out of ordinary `docker compose up` runs.
 
-The fixture contains 100 packages across 12 namespaces — `Rux`, `CommunityTools`, `Acme`, `Northwind`, `Helio`, `Cobalt`, `Ironbark`, `Lumen`, `Meridian`, `Orbit`, `Sentinel`, and `Vantage` — with 2 to 10 releases each. Its 636 versions span source, library, and program packages and cover prereleases, build-metadata variants, yanked releases, ordered authors and keywords, generated READMEs, license expressions, search text, a dependency graph, and 90 days of download history.
+The fixture contains 100 packages across 12 namespaces — `StdLib`, `CommunityTools`, `Acme`, `Northwind`, `Helio`, `Cobalt`, `Ironbark`, `Lumen`, `Meridian`, `Orbit`, `Sentinel`, and `Vantage` — with 2 to 10 releases each. It deliberately leaves `Rux` unused so that namespace stays free to claim by hand when exercising the dashboard. Its 633 versions span source, library, and program packages and cover prereleases, build-metadata variants, yanked releases, ordered authors and keywords, generated READMEs, license expressions, search text, a dependency graph, and 90 days of download history.
 
 Display names are PascalCase with no separators, so `HttpClient` normalizes to `httpclient`. The `_` → `-` normalization path is still exercised, by the unit fixtures in `src/discovery.rs` rather than by this seed.
 

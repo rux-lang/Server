@@ -10,7 +10,7 @@
  */
 
 export const NAMESPACES = [
-  { name: "Rux", author: "Rux Contributors", createdAt: "2026-01-01" },
+  { name: "StdLib", author: "Rux Contributors", createdAt: "2026-01-01" },
   { name: "CommunityTools", author: "Rux Community", createdAt: "2026-01-02" },
   { name: "Acme", author: "Acme Tools Team", createdAt: "2026-01-03" },
   { name: "Northwind", author: "Northwind Systems", createdAt: "2026-01-05" },
@@ -31,16 +31,16 @@ export const NAMESPACES = [
  * endpoint has a believable ranking instead of a flat one.
  */
 export const PACKAGES = [
-  ["Rux", "Io", "source", "Portable input and output primitives for Rux.", ["Io", "Runtime", "Streams"], "storage", 99],
-  ["Rux", "Json", "library", "JSON parsing and serialization with a streaming reader.", ["Json", "Serialization", "Parsing"], "data", 97],
-  ["Rux", "Text", "library", "UTF-8 string handling, slicing, and formatting.", ["Text", "Unicode", "Strings"], "text", 95],
-  ["Rux", "Math", "library", "Floating-point and integer math routines.", ["Math", "Numerics"], "math", 93],
-  ["Rux", "Memory", "source", "Allocation, copying, and arena helpers.", ["Memory", "Allocator"], "concurrency", 92],
-  ["Rux", "Time", "library", "Instants, durations, and calendar conversion.", ["Time", "Clock", "Duration"], "data", 90],
-  ["Rux", "Collections", "library", "Vectors, maps, sets, and deques with predictable growth.", ["Collections", "Containers"], "collections", 91],
-  ["Rux", "Process", "source", "Spawning, piping, and waiting on child processes.", ["Process", "Exec"], "storage", 78],
-  ["Rux", "Env", "library", "Environment variables and process arguments.", ["Env", "Config"], "cli", 74],
-  ["Rux", "Path", "library", "Cross-platform path parsing and joining.", ["Path", "Filesystem"], "storage", 82],
+  ["StdLib", "Io", "source", "Portable input and output primitives for Rux.", ["Io", "Runtime", "Streams"], "storage", 99],
+  ["StdLib", "Json", "library", "JSON parsing and serialization with a streaming reader.", ["Json", "Serialization", "Parsing"], "data", 97],
+  ["StdLib", "Text", "library", "UTF-8 string handling, slicing, and formatting.", ["Text", "Unicode", "Strings"], "text", 95],
+  ["StdLib", "Math", "library", "Floating-point and integer math routines.", ["Math", "Numerics"], "math", 93],
+  ["StdLib", "Memory", "source", "Allocation, copying, and arena helpers.", ["Memory", "Allocator"], "concurrency", 92],
+  ["StdLib", "Time", "library", "Instants, durations, and calendar conversion.", ["Time", "Clock", "Duration"], "data", 90],
+  ["StdLib", "Collections", "library", "Vectors, maps, sets, and deques with predictable growth.", ["Collections", "Containers"], "collections", 91],
+  ["StdLib", "Process", "source", "Spawning, piping, and waiting on child processes.", ["Process", "Exec"], "storage", 78],
+  ["StdLib", "Env", "library", "Environment variables and process arguments.", ["Env", "Config"], "cli", 74],
+  ["StdLib", "Path", "library", "Cross-platform path parsing and joining.", ["Path", "Filesystem"], "storage", 82],
 
   ["CommunityTools", "HttpClient", "library", "An HTTP/1.1 and HTTP/2 client with connection pooling.", ["Http", "Networking", "Client"], "net", 96],
   ["CommunityTools", "HttpServer", "library", "A small, composable HTTP server.", ["Http", "Server", "Networking"], "net", 89],

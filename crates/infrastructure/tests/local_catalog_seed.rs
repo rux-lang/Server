@@ -3,10 +3,10 @@ use sqlx::{Error, PgPool, query, query_as, query_scalar, raw_sql};
 
 const LOCAL_CATALOG_SEED: &str = include_str!("../../../deploy/local/local-catalog.sql");
 
-/// A version that exists for as long as `Rux::Io` is the first entry in
+/// A version that exists for as long as `StdLib::Io` is the first entry in
 /// `tools/catalog/packages.mjs`; the generator always starts that package's
 /// history at `0.0.0`.
-const ANCHOR_STORAGE_KEY: &str = "local-seed/rux/io/0.0.0.ruxpkg";
+const ANCHOR_STORAGE_KEY: &str = "local-seed/stdlib/io/0.0.0+musl.ruxpkg";
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn local_catalog_seed_populates_representative_data(pool: PgPool) -> Result<(), Error> {
@@ -16,11 +16,11 @@ async fn local_catalog_seed_populates_representative_data(pool: PgPool) -> Resul
     // them on every run. Regenerate the seed and update them together.
     assert_eq!(table_count(&pool, "namespaces").await?, 12);
     assert_eq!(table_count(&pool, "packages").await?, 100);
-    assert_eq!(table_count(&pool, "package_versions").await?, 636);
-    assert_eq!(table_count(&pool, "package_version_authors").await?, 772);
-    assert_eq!(table_count(&pool, "package_version_keywords").await?, 1589);
-    assert_eq!(table_count(&pool, "dependencies").await?, 859);
-    assert_eq!(table_count(&pool, "download_events").await?, 500_012);
+    assert_eq!(table_count(&pool, "package_versions").await?, 633);
+    assert_eq!(table_count(&pool, "package_version_authors").await?, 774);
+    assert_eq!(table_count(&pool, "package_version_keywords").await?, 1580);
+    assert_eq!(table_count(&pool, "dependencies").await?, 860);
+    assert_eq!(table_count(&pool, "download_events").await?, 500_009);
     assert_eq!(table_count(&pool, "users").await?, 0);
 
     // Every package carries between 2 and 10 releases.
@@ -65,7 +65,7 @@ async fn local_catalog_seed_populates_representative_data(pool: PgPool) -> Resul
         vec![
             ("acme".into(), "registrycli".into()),
             ("communitytools".into(), "httpclient".into()),
-            ("rux".into(), "io".into()),
+            ("stdlib".into(), "io".into()),
         ]
     );
 
@@ -169,9 +169,9 @@ async fn local_catalog_seed_populates_representative_data(pool: PgPool) -> Resul
     .fetch_one(&pool)
     .await?;
     assert_eq!(manifest["manifest"]["version"], 1);
-    assert_eq!(manifest["package"]["namespace"], "Rux");
+    assert_eq!(manifest["package"]["namespace"], "StdLib");
     assert_eq!(manifest["package"]["name"], "Io");
-    assert_eq!(manifest["package"]["version"], "0.0.0");
+    assert_eq!(manifest["package"]["version"], "0.0.0+musl");
 
     Ok(())
 }
@@ -212,7 +212,7 @@ async fn local_catalog_seed_is_repeatable_and_preserves_existing_rows(
     assert_eq!(after, before);
     assert_eq!(table_count(&pool, "namespaces").await?, 13);
     assert_eq!(table_count(&pool, "packages").await?, 100);
-    assert_eq!(table_count(&pool, "package_versions").await?, 636);
+    assert_eq!(table_count(&pool, "package_versions").await?, 633);
 
     // download_events has no natural key, so the seed guards on existing
     // history rather than ON CONFLICT. Without that guard a second run would

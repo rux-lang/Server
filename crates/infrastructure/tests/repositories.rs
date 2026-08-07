@@ -431,6 +431,53 @@ async fn complete_package_version_aggregate_round_trips(pool: PgPool) -> TestRes
     Ok(())
 }
 
+/// The immutability trigger compares `to_jsonb(NEW)` with `to_jsonb(OLD)`, and
+/// `PostgreSQL` leaves generated columns NULL in NEW until BEFORE triggers have
+/// run — so the semver sort keys have to be excluded or versions carrying a
+/// prerelease or build metadata can never be yanked.
+#[sqlx::test(migrations = "../../migrations")]
+async fn yanking_is_allowed_for_prerelease_and_build_metadata_versions(pool: PgPool) -> TestResult {
+    let repository = PostgresRepository::new(pool.clone());
+    let publisher = committed_user(&repository, profile(311, "Yank-Publisher")).await?;
+
+    let mut transaction = repository.begin().await?;
+    let namespace = transaction
+        .create_namespace(&identity("Yank_Tools"), Some(publisher.id))
+        .await?;
+    let package = transaction
+        .create_package(namespace.id, &identity("Yank_Pkg"), Some(publisher.id))
+        .await?;
+    let yanked_at = OffsetDateTime::now_utc();
+    for (index, value) in ["1.0.0-rc.1", "1.0.0+musl", "1.1.0-rc.1+musl"]
+        .into_iter()
+        .enumerate()
+    {
+        let created = transaction
+            .create_package_version(&resolver_package_version(
+                package.id,
+                value,
+                u8::try_from(index).expect("index fits in a byte") + 20,
+                Vec::new(),
+            ))
+            .await?;
+        assert_eq!(
+            transaction
+                .set_yank(created.id, Some((yanked_at, publisher.id)))
+                .await?,
+            WriteOutcome::Applied,
+            "{value} should be yankable"
+        );
+        assert_eq!(
+            transaction.set_yank(created.id, None).await?,
+            WriteOutcome::Applied,
+            "{value} should be un-yankable"
+        );
+    }
+    transaction.commit().await?;
+
+    Ok(())
+}
+
 #[sqlx::test(migrations = "../../migrations")]
 async fn resolver_index_reads_display_identities_yanks_and_dependencies_in_one_aggregate(
     pool: PgPool,
