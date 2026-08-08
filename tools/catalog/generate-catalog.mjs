@@ -29,6 +29,8 @@ const OUTPUT = fileURLToPath(new URL("../../deploy/local/local-catalog.sql", imp
 const TOTAL_DOWNLOAD_EVENTS = 500_000;
 const DOWNLOAD_WINDOW_DAYS = 90;
 const MIN_RUX = "0.4.0";
+const LOCAL_CATALOG_CUTOFF = new Date(Date.UTC(2026, 7, 1));
+const YANK_DELAY_DAYS = 20;
 
 // ---------------------------------------------------------------------------
 // Deterministic randomness
@@ -293,7 +295,7 @@ function versionsFor(random, popularity) {
     });
 
     day = new Date(day);
-    day.setUTCDate(day.getUTCDate() + between(random, 6, 55));
+    day.setUTCDate(day.getUTCDate() + between(random, 3, 6));
   }
 
   return releases;
@@ -445,6 +447,17 @@ for (const entry of weighted) {
   if (count > 0) downloadRows.push({ storageKey: entry.storageKey, count });
 }
 
+for (const row of versionRows) {
+  const lifecycleEnd = new Date(row.release.publishedAt);
+  if (row.release.yanked) lifecycleEnd.setUTCDate(lifecycleEnd.getUTCDate() + YANK_DELAY_DAYS);
+  if (lifecycleEnd >= LOCAL_CATALOG_CUTOFF) {
+    throw new Error(
+      `${row.pkg.namespace}/${row.pkg.name}@${row.release.version} reaches ${lifecycleEnd.toISOString()}, ` +
+        `after the local catalog cutoff ${LOCAL_CATALOG_CUTOFF.toISOString()}`,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Emit
 // ---------------------------------------------------------------------------
@@ -545,7 +558,7 @@ push(
     .map((row) => {
       const published = row.release.publishedAt.toISOString().replace("T", " ").slice(0, 19);
       const yanked = row.release.yanked
-        ? `'${published}'::timestamptz + interval '20 days'`
+        ? `'${published}'::timestamptz + interval '${YANK_DELAY_DAYS} days'`
         : "NULL::timestamptz";
       return `        (${[
         quote(row.pkg.normalizedNamespace),

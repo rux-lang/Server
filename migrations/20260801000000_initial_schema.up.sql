@@ -176,8 +176,8 @@ CREATE TABLE package_versions (
     description TEXT,
     repository_url TEXT,
     homepage_url TEXT,
-    readme_path TEXT,
-    readme_text TEXT,
+    readme_file_path TEXT,
+    readme_file_text TEXT,
     license_expression TEXT,
     license_file_path TEXT,
     license_file_text TEXT,
@@ -196,7 +196,7 @@ CREATE TABLE package_versions (
     search_vector TSVECTOR
         GENERATED ALWAYS AS (
             setweight(to_tsvector('simple', coalesce(description, '')), 'A')
-            || setweight(to_tsvector('simple', coalesce(readme_text, '')), 'B')
+            || setweight(to_tsvector('simple', coalesce(readme_file_text, '')), 'B')
         ) STORED,
     prerelease_sort_key BYTEA
         GENERATED ALWAYS AS (
@@ -233,29 +233,28 @@ CREATE TABLE package_versions (
     CONSTRAINT package_versions_homepage_url_length CHECK (
         homepage_url IS NULL OR octet_length(homepage_url) <= 2048
     ),
-    CONSTRAINT package_versions_readme_state CHECK (
-        (readme_path IS NULL AND readme_text IS NULL)
+    CONSTRAINT package_versions_readme_file_state CHECK (
+        (readme_file_path IS NULL AND readme_file_text IS NULL)
         OR (
-            readme_path IS NOT NULL
-            AND readme_text IS NOT NULL
-            AND octet_length(readme_path) BETWEEN 1 AND 2048
-            AND octet_length(readme_text) <= 1048576
+            readme_file_path IS NOT NULL
+            AND readme_file_text IS NOT NULL
+            AND octet_length(readme_file_path) BETWEEN 1 AND 2048
+            AND octet_length(readme_file_text) <= 1048576
         )
     ),
     CONSTRAINT package_versions_license_state CHECK (
-        (license_expression IS NULL AND license_file_path IS NULL AND license_file_text IS NULL)
-        OR (
-            license_expression IS NOT NULL
-            AND license_file_path IS NULL
-            AND license_file_text IS NULL
-            AND octet_length(license_expression) BETWEEN 1 AND 512
-        )
-        OR (
+        (
             license_expression IS NULL
-            AND license_file_path IS NOT NULL
-            AND license_file_text IS NOT NULL
-            AND octet_length(license_file_path) BETWEEN 1 AND 2048
-            AND octet_length(license_file_text) <= 1048576
+            OR octet_length(license_expression) BETWEEN 1 AND 512
+        )
+        AND (
+            (license_file_path IS NULL AND license_file_text IS NULL)
+            OR (
+                license_file_path IS NOT NULL
+                AND license_file_text IS NOT NULL
+                AND octet_length(license_file_path) BETWEEN 1 AND 2048
+                AND octet_length(license_file_text) <= 1048576
+            )
         )
     ),
     CONSTRAINT package_versions_normalized_manifest_object CHECK (
@@ -539,9 +538,21 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    IF (to_jsonb(NEW) - 'yanked_at' - 'yanked_by_user_id' - 'search_vector')
-        IS DISTINCT FROM
-       (to_jsonb(OLD) - 'yanked_at' - 'yanked_by_user_id' - 'search_vector') THEN
+    IF (
+        to_jsonb(NEW)
+        - 'yanked_at'
+        - 'yanked_by_user_id'
+        - 'search_vector'
+        - 'prerelease_sort_key'
+        - 'build_metadata_sort_key'
+    ) IS DISTINCT FROM (
+        to_jsonb(OLD)
+        - 'yanked_at'
+        - 'yanked_by_user_id'
+        - 'search_vector'
+        - 'prerelease_sort_key'
+        - 'build_metadata_sort_key'
+    ) THEN
         RAISE EXCEPTION 'package version metadata is immutable'
             USING ERRCODE = '55000';
     END IF;

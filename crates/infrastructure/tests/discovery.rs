@@ -135,6 +135,9 @@ async fn highlights_use_active_representatives_and_bounded_download_window(
     let hidden = create_package(&pool, "Rux", "Hidden").await?;
     let hidden_version =
         insert_version(&pool, hidden, "1.0.0", "2026-07-25T00:00:00Z", true).await?;
+    let future = create_package(&pool, "Rux", "Future").await?;
+    let future_version =
+        insert_version(&pool, future, "1.0.0", "2026-08-03T00:00:00Z", false).await?;
     for _ in 0..3 {
         add_download(&pool, popular_version, "2026-07-15T00:00:00Z").await?;
     }
@@ -142,6 +145,9 @@ async fn highlights_use_active_representatives_and_bounded_download_window(
     add_download(&pool, recent_version, "2026-07-16T00:00:00Z").await?;
     for _ in 0..5 {
         add_download(&pool, hidden_version, "2026-07-17T00:00:00Z").await?;
+    }
+    for _ in 0..10 {
+        add_download(&pool, future_version, "2026-07-18T00:00:00Z").await?;
     }
 
     let highlights = repository

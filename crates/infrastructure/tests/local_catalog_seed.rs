@@ -21,6 +21,16 @@ async fn local_catalog_seed_populates_representative_data(pool: PgPool) -> Resul
     assert_eq!(table_count(&pool, "package_version_keywords").await?, 1580);
     assert_eq!(table_count(&pool, "dependencies").await?, 860);
     assert_eq!(table_count(&pool, "download_events").await?, 500_009);
+
+    let timestamps_at_or_after_cutoff = query_scalar::<_, i64>(
+        "SELECT count(*)
+         FROM package_versions
+         WHERE published_at >= TIMESTAMPTZ '2026-08-01 00:00:00+00'
+            OR yanked_at >= TIMESTAMPTZ '2026-08-01 00:00:00+00'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(timestamps_at_or_after_cutoff, 0);
     assert_eq!(table_count(&pool, "users").await?, 0);
 
     // Every package carries between 2 and 10 releases.

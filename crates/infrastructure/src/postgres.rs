@@ -1971,10 +1971,11 @@ impl DiscoveryReader for PostgresRepository {
                     published_at,
                     NULL::BIGINT AS downloads
              FROM active_representative
+             WHERE published_at <= $1
              ORDER BY published_at DESC,
                       namespace_normalized_name,
                       package_normalized_name
-             LIMIT $1"
+             LIMIT $2"
         );
         let popular_sql = format!(
             "WITH {ACTIVE_REPRESENTATIVE_CTE}, download_counts AS (
@@ -1993,12 +1994,14 @@ impl DiscoveryReader for PostgresRepository {
                     counts.downloads
              FROM active_representative r
              JOIN download_counts counts ON counts.package_id = r.package_id
+             WHERE r.published_at <= $2
              ORDER BY counts.downloads DESC,
                       r.namespace_normalized_name,
                       r.package_normalized_name
              LIMIT $3"
         );
         let recent_rows = query_as::<_, HighlightPackageRow>(&recent_sql)
+            .bind(until)
             .bind(i64::from(limit))
             .fetch_all(&self.pool)
             .await
