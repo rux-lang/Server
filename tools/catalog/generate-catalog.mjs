@@ -360,7 +360,7 @@ for (const pkg of packages) {
         license,
         repository,
         ...(homepage ? { homepage } : {}),
-        readme: "README.md",
+        readme_file: "README.md",
       },
       dependencies: {},
     };
@@ -495,7 +495,7 @@ push("");
 
 push("-- READMEs are keyed by package so the text is emitted once rather than");
 push("-- repeated across every release of the same package.");
-push("WITH seed_readmes (namespace_name, package_name, readme_text) AS (");
+push("WITH seed_readmes (namespace_name, package_name, readme_file_text) AS (");
 push("    VALUES");
 push(
   readmeRows
@@ -522,7 +522,7 @@ push(
     "description",
     "repository_url",
     "homepage_url",
-    "readme_path",
+    "readme_file_path",
     "license_expression",
     "normalized_manifest",
     "artifact_sha256",
@@ -594,8 +594,8 @@ push(
     "description",
     "repository_url",
     "homepage_url",
-    "readme_path",
-    "readme_text",
+    "readme_file_path",
+    "readme_file_text",
     "license_expression",
     "normalized_manifest",
     "artifact_sha256",
@@ -628,8 +628,8 @@ push(
     "seed_versions.description",
     "seed_versions.repository_url",
     "seed_versions.homepage_url",
-    "seed_versions.readme_path",
-    "seed_readmes.readme_text",
+    "seed_versions.readme_file_path",
+    "seed_readmes.readme_file_text",
     "seed_versions.license_expression",
     "seed_versions.normalized_manifest",
     "decode(seed_versions.artifact_sha256, 'hex')",

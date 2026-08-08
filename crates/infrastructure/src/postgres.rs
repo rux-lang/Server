@@ -279,10 +279,11 @@ struct VersionRow {
     description: Option<String>,
     repository_url: Option<String>,
     homepage_url: Option<String>,
-    readme_path: Option<String>,
-    readme_text: Option<String>,
+    readme_file_path: Option<String>,
+    readme_file_text: Option<String>,
     license_expression: Option<String>,
-    license_url: Option<String>,
+    license_file_path: Option<String>,
+    license_file_text: Option<String>,
     normalized_manifest: Value,
     artifact_sha256: Vec<u8>,
     artifact_size: i64,
@@ -392,7 +393,7 @@ const TOKEN_COLUMNS: &str = "id, user_id, display_name, token_prefix, secret_has
 const PACKAGE_COLUMNS: &str = "id, namespace_id, display_name, created_by_user_id, created_at";
 const QUALIFIED_PACKAGE_COLUMNS: &str =
     "p.id, p.namespace_id, p.display_name, p.created_by_user_id, p.created_at";
-const VERSION_COLUMNS: &str = "v.id, v.package_id, v.version, v.manifest_schema_version, v.min_rux, v.package_type, v.description, v.repository_url, v.homepage_url, v.readme_path, v.readme_text, v.license_expression, v.license_url, v.normalized_manifest, v.artifact_sha256, v.artifact_size, v.storage_key, v.artifact_file_count, v.artifact_expanded_bytes, v.source_file_count, v.source_line_count, v.published_by_user_id, v.published_at, v.yanked_at, v.yanked_by_user_id";
+const VERSION_COLUMNS: &str = "v.id, v.package_id, v.version, v.manifest_schema_version, v.min_rux, v.package_type, v.description, v.repository_url, v.homepage_url, v.readme_file_path, v.readme_file_text, v.license_expression, v.license_file_path, v.license_file_text, v.normalized_manifest, v.artifact_sha256, v.artifact_size, v.storage_key, v.artifact_file_count, v.artifact_expanded_bytes, v.source_file_count, v.source_line_count, v.published_by_user_id, v.published_at, v.yanked_at, v.yanked_by_user_id";
 const REPRESENTATIVE_CTE: &str = "representative AS (
     SELECT n.display_name AS namespace_display_name,
            n.normalized_name AS namespace_normalized_name,
@@ -1117,7 +1118,8 @@ async fn version_record(
                 version_range: VersionRange::new(item.get::<String, _>("version_range")).map_err(|error| RepositoryError::with_source(RepositoryErrorKind::CorruptData, error))?,
             })
         }).collect::<Result<Vec<_>, RepositoryError>>()?;
-    let readme = pair(row.readme_path, row.readme_text, "readme")?;
+    let readme_file = pair(row.readme_file_path, row.readme_file_text, "readme_file")?;
+    let license_file = pair(row.license_file_path, row.license_file_text, "license file")?;
     Ok(PackageVersionRecord {
         id: PackageVersionId::new(row.id),
         package_id: PackageId::new(row.package_id),
@@ -1133,9 +1135,9 @@ async fn version_record(
         description: row.description,
         repository_url: row.repository_url,
         homepage_url: row.homepage_url,
-        readme,
+        readme_file,
         license_expression: row.license_expression,
-        license_url: row.license_url,
+        license_file,
         normalized_manifest: json_object(row.normalized_manifest, "normalized manifest")?,
         artifact_sha256: checksum(row.artifact_sha256)?,
         artifact_size: nonnegative_u64(row.artifact_size, "artifact size")?,
@@ -1171,9 +1173,9 @@ fn package_version_metadata_record(
         description: version.description,
         repository_url: version.repository_url,
         homepage_url: version.homepage_url,
-        readme: version.readme,
+        readme_file: version.readme_file,
         license_expression: version.license_expression,
-        license_url: version.license_url,
+        license_file: version.license_file,
         normalized_manifest: version.normalized_manifest,
         artifact_sha256: version.artifact_sha256,
         artifact_size: version.artifact_size,
@@ -2924,11 +2926,15 @@ impl CatalogWriter for PostgresTransaction {
         version: &NewPackageVersion,
     ) -> Result<PackageVersionRecord, RepositoryError> {
         let normalized_manifest = Value::Object(version.normalized_manifest.clone());
-        let (readme_path, readme_text) = version
-            .readme
+        let (readme_file_path, readme_file_text) = version
+            .readme_file
             .clone()
             .map_or((None, None), |(path, text)| (Some(path), Some(text)));
-        let sql = format!("INSERT INTO package_versions (package_id, version, major, minor, patch, prerelease, build_metadata, manifest_schema_version, min_rux, package_type, description, repository_url, homepage_url, readme_path, readme_text, license_expression, license_url, normalized_manifest, artifact_sha256, artifact_size, storage_key, artifact_file_count, artifact_expanded_bytes, source_file_count, source_line_count, published_by_user_id) VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26) RETURNING {VERSION_COLUMNS}").replace("v.", "");
+        let (license_file_path, license_file_text) = version
+            .license_file
+            .clone()
+            .map_or((None, None), |(path, text)| (Some(path), Some(text)));
+        let sql = format!("INSERT INTO package_versions (package_id, version, major, minor, patch, prerelease, build_metadata, manifest_schema_version, min_rux, package_type, description, repository_url, homepage_url, readme_file_path, readme_file_text, license_expression, license_file_path, license_file_text, normalized_manifest, artifact_sha256, artifact_size, storage_key, artifact_file_count, artifact_expanded_bytes, source_file_count, source_line_count, published_by_user_id) VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27) RETURNING {VERSION_COLUMNS}").replace("v.", "");
         let row = query_as::<_, VersionRow>(&sql)
             .bind(version.package_id.get())
             .bind(version.version.as_str())
@@ -2946,10 +2952,11 @@ impl CatalogWriter for PostgresTransaction {
             .bind(&version.description)
             .bind(&version.repository_url)
             .bind(&version.homepage_url)
-            .bind(readme_path)
-            .bind(readme_text)
+            .bind(readme_file_path)
+            .bind(readme_file_text)
             .bind(&version.license_expression)
-            .bind(&version.license_url)
+            .bind(license_file_path)
+            .bind(license_file_text)
             .bind(normalized_manifest)
             .bind(version.artifact_sha256.as_bytes().as_slice())
             .bind(
@@ -2998,9 +3005,9 @@ impl CatalogWriter for PostgresTransaction {
             description: version.description.clone(),
             repository_url: version.repository_url.clone(),
             homepage_url: version.homepage_url.clone(),
-            readme: version.readme.clone(),
+            readme_file: version.readme_file.clone(),
             license_expression: version.license_expression.clone(),
-            license_url: version.license_url.clone(),
+            license_file: version.license_file.clone(),
             normalized_manifest: version.normalized_manifest.clone(),
             artifact_sha256: version.artifact_sha256,
             artifact_size: version.artifact_size,

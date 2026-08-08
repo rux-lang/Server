@@ -309,10 +309,10 @@ impl<'source> Parser<'source> {
                 "Authors",
                 "Keywords",
                 "License",
-                "LicenseUrl",
+                "LicenseFile",
                 "Repository",
                 "Homepage",
-                "Readme",
+                "ReadmeFile",
             ],
             &["Package"],
         );
@@ -339,10 +339,10 @@ impl<'source> Parser<'source> {
         let authors = self.parse_authors(table);
         let keywords = self.parse_keywords(table);
         let license = self.parse_license(table);
-        let license_url = self.optional_url(table, "LicenseUrl", &["Package"]);
+        let license_file = self.optional_path(table, "LicenseFile", &["Package"], false);
         let repository = self.optional_url(table, "Repository", &["Package"]);
         let homepage = self.optional_url(table, "Homepage", &["Package"]);
-        let readme = self.optional_path(table, "Readme", &["Package"], false);
+        let readme_file = self.optional_path(table, "ReadmeFile", &["Package"], false);
         let dependencies = root.get("Dependencies").map_or_else(
             || Some(BTreeMap::new()),
             |item| self.parse_dependencies(item),
@@ -361,10 +361,10 @@ impl<'source> Parser<'source> {
             authors: authors?,
             keywords: keywords?,
             license,
-            license_url,
+            license_file,
             repository,
             homepage,
-            readme,
+            readme_file,
             dependencies: dependencies?,
             build: build?,
         })
@@ -569,6 +569,10 @@ impl<'source> Parser<'source> {
         valid.then_some(result)
     }
 
+    /// Parses `Package.License` as an SPDX expression.
+    ///
+    /// `LicenseFile` is parsed separately as an ordinary archive path. The two
+    /// are independent: declaring one says nothing about the other.
     fn parse_license(&mut self, table: &Table) -> Option<String> {
         let item = table.get("License")?;
         let (value, span) = self.item_string(item, &["Package", "License"])?;
@@ -587,10 +591,9 @@ impl<'source> Parser<'source> {
                 span,
                 format!("invalid SPDX expression: {error}"),
             );
-            None
-        } else {
-            Some(value.to_owned())
+            return None;
         }
+        Some(value.to_owned())
     }
 
     fn parse_dependencies(&mut self, item: &Item) -> Option<BTreeMap<IdentitySegment, Dependency>> {

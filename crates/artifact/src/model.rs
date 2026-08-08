@@ -8,7 +8,8 @@ pub struct ArtifactInspection {
     pub(crate) expanded_bytes: u64,
     pub(crate) source_file_count: u32,
     pub(crate) source_line_count: u64,
-    pub(crate) readme: Option<String>,
+    pub(crate) readme_file: Option<String>,
+    pub(crate) license_file: Option<String>,
 }
 
 impl ArtifactInspection {
@@ -38,7 +39,12 @@ impl ArtifactInspection {
     }
 
     #[must_use]
-    pub fn readme(&self) -> Option<&str> {
-        self.readme.as_deref()
+    pub fn readme_file(&self) -> Option<&str> {
+        self.readme_file.as_deref()
+    }
+
+    #[must_use]
+    pub fn license_file(&self) -> Option<&str> {
+        self.license_file.as_deref()
     }
 }

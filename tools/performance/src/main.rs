@@ -417,7 +417,7 @@ async fn seed_versions_and_children(
         "INSERT INTO package_versions (
              package_id, version, major, minor, patch, prerelease,
              manifest_schema_version, min_rux, package_type, description,
-             repository_url, readme_path, readme_text, license_expression,
+             repository_url, readme_file_path, readme_file_text, license_expression,
              normalized_manifest, artifact_sha256, artifact_size, storage_key,
              artifact_file_count, artifact_expanded_bytes, source_file_count,
              source_line_count, published_by_user_id, published_at, yanked_at,

@@ -114,7 +114,7 @@ async fn local_catalog_seed_populates_representative_data(pool: PgPool) -> Resul
     let incomplete = query_scalar::<_, i64>(
         "SELECT count(*)
          FROM package_versions
-         WHERE readme_text IS NULL
+         WHERE readme_file_text IS NULL
             OR NOT EXISTS (
                 SELECT 1 FROM package_version_authors
                 WHERE package_version_id = package_versions.id
@@ -131,8 +131,8 @@ async fn local_catalog_seed_populates_representative_data(pool: PgPool) -> Resul
     // READMEs stay within the 20-300 word band the catalog is generated to.
     let readme_span = query_as::<_, (i32, i32)>(
         "SELECT
-             min(array_length(regexp_split_to_array(trim(readme_text), '\\s+'), 1)),
-             max(array_length(regexp_split_to_array(trim(readme_text), '\\s+'), 1))
+             min(array_length(regexp_split_to_array(trim(readme_file_text), '\\s+'), 1)),
+             max(array_length(regexp_split_to_array(trim(readme_file_text), '\\s+'), 1))
          FROM package_versions",
     )
     .fetch_one(&pool)

@@ -18,10 +18,10 @@ Description = "Example package"
 Authors = ["Rux Contributors <info@rux-lang.dev>"]
 Keywords = ["Example", "Registry"]
 License = "MIT OR Apache-2.0"
-LicenseUrl = "https://github.com/rux-lang/example/blob/main/LICENSE.md"
+LicenseFile = "LICENSE.md"
 Repository = "https://github.com/rux-lang/example"
 Homepage = "https://example.dev"
-Readme = "README.md"
+ReadmeFile = "README.md"
 
 [Dependencies]
 Io = { Namespace = "Rux", Version = "^1.0" }
@@ -64,7 +64,7 @@ A package requires `Name`, `Version`, and `Type`. `Namespace` is optional for lo
 
 Manifest v1 has no separate `SharedLibrary` type because `Library` already denotes one, and static archives are not a package type.
 
-`License` is a strict SPDX expression naming the terms, and `LicenseUrl` links their text. The two are independent, so a package may declare either, both, or neither. `LicenseUrl`, `Repository`, and `Homepage` are absolute HTTP or HTTPS URLs with a host and without credentials. Keywords use identity-segment syntax and cannot collide after normalization.
+`License` is a strict SPDX expression and `LicenseFile` is a package-relative path to the licence text in the archive. The two are independent: a package may set either, both, or neither. A field whose name ends in `File` always names an archive entry, so `ReadmeFile` and `LicenseFile` share one path contract. Repository and homepage values are absolute HTTP or HTTPS URLs with a host and without credentials. Keywords use identity-segment syntax and cannot collide after normalization.
 
 Each dependency key is the local import alias and each value is an inline table. A registry dependency requires `Namespace` and `Version`; `Package` defaults to the alias. A path dependency requires `Path`, may override `Package`, and cannot contain `Namespace` or `Version`. Path dependencies are valid locally but rejected by the publication profile.
 
@@ -104,7 +104,7 @@ Shared `Build.Defines` are overlaid by the selected mode's `Defines`. Define val
 
 ## Paths and limits
 
-Manifest paths are UTF-8, relative, `/`-separated paths. Backslashes, roots, empty components, and `.` components are invalid. README and workspace paths also reject `..`. Dependency and output paths may start with one or more `..` components, but parent traversal cannot appear after a normal component.
+Manifest paths are UTF-8, relative, `/`-separated paths. Backslashes, roots, empty components, and `.` components are invalid. README, license, and workspace paths also reject `..`. Dependency and output paths may start with one or more `..` components, but parent traversal cannot appear after a normal component.
 
 All limits count UTF-8 bytes:
 

@@ -147,11 +147,21 @@ fn publication_metadata(
             })
         })
         .collect::<Option<Vec<_>>>()?;
-    let readme = package.readme().map(|path| {
+    let license_expression = package.license().map(str::to_owned);
+    let license_file = package.license_file().map(|path| {
         (
             path.as_str().to_owned(),
             inspection
-                .readme()
+                .license_file()
+                .expect("artifact inspection returns referenced license text")
+                .to_owned(),
+        )
+    });
+    let readme_file = package.readme_file().map(|path| {
+        (
+            path.as_str().to_owned(),
+            inspection
+                .readme_file()
                 .expect("artifact inspection returns referenced README text")
                 .to_owned(),
         )
@@ -167,9 +177,9 @@ fn publication_metadata(
         description: package.description().map(str::to_owned),
         repository_url: package.repository().map(|value| value.as_str().to_owned()),
         homepage_url: package.homepage().map(|value| value.as_str().to_owned()),
-        readme,
-        license_expression: package.license().map(str::to_owned),
-        license_url: package.license_url().map(|value| value.as_str().to_owned()),
+        readme_file,
+        license_expression,
+        license_file,
         normalized_manifest: normalized_manifest(manifest, package),
         artifact_file_count: inspection.file_count(),
         artifact_expanded_bytes: inspection.expanded_bytes(),
@@ -233,8 +243,10 @@ fn normalized_manifest(manifest: &Manifest, package: &PackageManifest) -> JsonOb
     insert_optional(&mut package_json, "license", package.license());
     insert_optional(
         &mut package_json,
-        "license_url",
-        package.license_url().map(rux_manifest::WebUrl::as_str),
+        "license_file",
+        package
+            .license_file()
+            .map(rux_manifest::ManifestPath::as_str),
     );
     insert_optional(
         &mut package_json,
@@ -248,8 +260,10 @@ fn normalized_manifest(manifest: &Manifest, package: &PackageManifest) -> JsonOb
     );
     insert_optional(
         &mut package_json,
-        "readme",
-        package.readme().map(rux_manifest::ManifestPath::as_str),
+        "readme_file",
+        package
+            .readme_file()
+            .map(rux_manifest::ManifestPath::as_str),
     );
 
     let dependencies = package

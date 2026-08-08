@@ -37,6 +37,7 @@ struct ManifestContext {
     manifest: rux_manifest::Manifest,
     bytes: Vec<u8>,
     readme_path: Option<String>,
+    license_path: Option<String>,
 }
 
 /// Validates a complete `.ruxpkg` archive against its separately uploaded manifest.
@@ -132,12 +133,14 @@ fn load_manifest<R: Read + Seek>(
     let ManifestKind::Package(package) = manifest.kind() else {
         unreachable!("publication validation only accepts packages");
     };
-    let readme_path = package.readme().map(|path| path.as_str().to_owned());
+    let readme_path = package.readme_file().map(|path| path.as_str().to_owned());
+    let license_path = package.license_file().map(|path| path.as_str().to_owned());
 
     Ok(ManifestContext {
         manifest,
         bytes: manifest_bytes,
         readme_path,
+        license_path,
     })
 }
 
@@ -150,12 +153,14 @@ fn inspect_contents<R: Read + Seek>(
         manifest,
         bytes: manifest_bytes,
         readme_path,
+        license_path,
     } = context;
     let entries_by_path = entries
         .iter()
         .map(|entry| (entry.path.as_str(), entry))
         .collect::<BTreeMap<_, _>>();
     validate_reference(&entries_by_path, readme_path.as_deref())?;
+    validate_reference(&entries_by_path, license_path.as_deref())?;
 
     let source_count = entries
         .iter()
@@ -171,10 +176,14 @@ fn inspect_contents<R: Read + Seek>(
 
     let mut expanded_bytes = u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX);
     let mut source_line_count = 0_u64;
-    let mut readme = None;
+    let mut readme_file = None;
+    let mut license_file = None;
 
     if readme_path.as_deref() == Some("Rux.toml") {
-        readme = Some(decode_text(&manifest_bytes, "Rux.toml")?);
+        readme_file = Some(decode_text(&manifest_bytes, "Rux.toml")?);
+    }
+    if license_path.as_deref() == Some("Rux.toml") {
+        license_file = Some(decode_text(&manifest_bytes, "Rux.toml")?);
     }
 
     for entry in entries
@@ -182,7 +191,8 @@ fn inspect_contents<R: Read + Seek>(
         .filter(|entry| entry.kind == EntryKind::File && entry.path != "Rux.toml")
     {
         let source = is_source(&entry.path);
-        let text = readme_path.as_deref() == Some(entry.path.as_str());
+        let text = readme_path.as_deref() == Some(entry.path.as_str())
+            || license_path.as_deref() == Some(entry.path.as_str());
         let (limit, limit_code) = if text {
             (ARTIFACT_MAX_TEXT_BYTES, ArtifactErrorCode::TextTooLarge)
         } else if source {
@@ -213,7 +223,13 @@ fn inspect_contents<R: Read + Seek>(
             source_line_count += physical_line_count(&bytes);
         }
         if text {
-            readme = Some(decode_text(&bytes, &entry.path)?);
+            let value = decode_text(&bytes, &entry.path)?;
+            if readme_path.as_deref() == Some(entry.path.as_str()) {
+                readme_file = Some(value.clone());
+            }
+            if license_path.as_deref() == Some(entry.path.as_str()) {
+                license_file = Some(value);
+            }
         }
     }
 
@@ -229,7 +245,8 @@ fn inspect_contents<R: Read + Seek>(
         expanded_bytes,
         source_file_count: u32::try_from(source_count).expect("entry limit fits u32"),
         source_line_count,
-        readme,
+        readme_file,
+        license_file,
     })
 }
 

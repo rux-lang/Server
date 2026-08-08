@@ -270,13 +270,13 @@ async fn insert_version(
     package_id: Uuid,
     version: &str,
     description: Option<&str>,
-    readme_text: Option<&str>,
+    readme_file_text: Option<&str>,
     storage_suffix: &str,
 ) -> Result<Uuid, Error> {
     query_scalar::<_, Uuid>(
         "INSERT INTO package_versions (
              package_id, version, major, minor, patch, manifest_schema_version, min_rux,
-             package_type, description, readme_path, readme_text, normalized_manifest,
+             package_type, description, readme_file_path, readme_file_text, normalized_manifest,
              artifact_sha256, artifact_size, storage_key, artifact_file_count,
              artifact_expanded_bytes, source_file_count, source_line_count
          ) VALUES (
@@ -289,7 +289,7 @@ async fn insert_version(
     .bind(package_id)
     .bind(version)
     .bind(description)
-    .bind(readme_text)
+    .bind(readme_file_text)
     .bind(format!("packages/example-{storage_suffix}.ruxpkg"))
     .fetch_one(pool)
     .await

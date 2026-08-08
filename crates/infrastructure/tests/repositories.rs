@@ -308,9 +308,9 @@ async fn complete_package_version_aggregate_round_trips(pool: PgPool) -> TestRes
             description: Some("Example package".into()),
             repository_url: Some("https://github.com/rux-lang/example".into()),
             homepage_url: None,
-            readme: Some(("README.md".into(), "# Example".into())),
+            readme_file: Some(("README.md".into(), "# Example".into())),
             license_expression: Some("MIT".into()),
-            license_url: Some("https://example.com/LICENSE".into()),
+            license_file: None,
             normalized_manifest: manifest,
             artifact_sha256: ArtifactSha256::new([4; 32]),
             artifact_size: 1024,
@@ -364,14 +364,11 @@ async fn complete_package_version_aggregate_round_trips(pool: PgPool) -> TestRes
     assert_eq!(metadata.namespace.as_str(), "Rux");
     assert_eq!(metadata.package.as_str(), "Example_Pkg");
     assert_eq!(
-        metadata.readme,
+        metadata.readme_file,
         Some(("README.md".into(), "# Example".into()))
     );
     assert_eq!(metadata.license_expression.as_deref(), Some("MIT"));
-    assert_eq!(
-        metadata.license_url.as_deref(),
-        Some("https://example.com/LICENSE")
-    );
+    assert!(metadata.license_file.is_none());
     assert_eq!(metadata.normalized_manifest["Manifest"], "normalized");
     assert_eq!(metadata.dependencies[0].alias.as_str(), "Alpha");
     assert_eq!(metadata.artifact_sha256, ArtifactSha256::new([4; 32]));
@@ -877,9 +874,9 @@ fn resolver_package_version(
         description: None,
         repository_url: None,
         homepage_url: None,
-        readme: None,
+        readme_file: None,
         license_expression: None,
-        license_url: None,
+        license_file: None,
         normalized_manifest: Map::new(),
         artifact_sha256: ArtifactSha256::new([checksum_byte; 32]),
         artifact_size: 1024,

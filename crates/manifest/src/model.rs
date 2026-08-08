@@ -88,10 +88,10 @@ pub struct PackageManifest {
     pub(crate) authors: Vec<String>,
     pub(crate) keywords: Vec<IdentitySegment>,
     pub(crate) license: Option<String>,
-    pub(crate) license_url: Option<WebUrl>,
+    pub(crate) license_file: Option<ManifestPath>,
     pub(crate) repository: Option<WebUrl>,
     pub(crate) homepage: Option<WebUrl>,
-    pub(crate) readme: Option<ManifestPath>,
+    pub(crate) readme_file: Option<ManifestPath>,
     pub(crate) dependencies: BTreeMap<IdentitySegment, Dependency>,
     pub(crate) build: BuildConfiguration,
 }
@@ -132,14 +132,19 @@ impl PackageManifest {
         &self.keywords
     }
 
+    /// The SPDX expression naming the terms.
+    ///
+    /// Independent of [`license_file`](Self::license_file): a manifest may
+    /// declare the expression, the file, both, or neither.
     #[must_use]
     pub fn license(&self) -> Option<&str> {
         self.license.as_deref()
     }
 
+    /// The archive entry carrying the licence text.
     #[must_use]
-    pub fn license_url(&self) -> Option<&WebUrl> {
-        self.license_url.as_ref()
+    pub fn license_file(&self) -> Option<&ManifestPath> {
+        self.license_file.as_ref()
     }
 
     #[must_use]
@@ -153,8 +158,8 @@ impl PackageManifest {
     }
 
     #[must_use]
-    pub fn readme(&self) -> Option<&ManifestPath> {
-        self.readme.as_ref()
+    pub fn readme_file(&self) -> Option<&ManifestPath> {
+        self.readme_file.as_ref()
     }
 
     #[must_use]

@@ -554,9 +554,9 @@ Namespace = "Rux"
 Name = "Example"
 Version = "1.2.3"
 Type = "Source"
-Readme = "README.md"
 License = "MIT"
-LicenseUrl = "https://example.com/LICENSE"
+LicenseFile = "LICENSE"
+ReadmeFile = "README.md"
 "#;
     const LOCAL_ONLY_MANIFEST: &str = r#"[Manifest]
 Version = 1
@@ -636,11 +636,11 @@ Type = "Source"
         let directory = tempfile::tempdir().expect("temporary directory should be created");
         let receiver = receiver(&directory, DEFAULT_UPLOAD_TEMPORARY_CAPACITY_BYTES);
         let source = b"first\nsecond";
-        let readme = b"# Example\n";
+        let readme_file = b"# Example\n";
         let license = b"Example license";
         let entries: [(&str, &[u8]); 3] = [
             ("Src/Main.rux", source),
-            ("README.md", readme),
+            ("README.md", readme_file),
             ("LICENSE", license),
         ];
         let package = artifact_package(VALID_MANIFEST, &entries);
@@ -668,7 +668,11 @@ Type = "Source"
         assert_eq!(inspected.inspection().file_count(), 4);
         assert_eq!(inspected.inspection().source_file_count(), 1);
         assert_eq!(inspected.inspection().source_line_count(), 2);
-        assert_eq!(inspected.inspection().readme(), Some("# Example\n"));
+        assert_eq!(inspected.inspection().readme_file(), Some("# Example\n"));
+        assert_eq!(
+            inspected.inspection().license_file(),
+            Some("Example license")
+        );
         assert_eq!(inspected.package().byte_size(), expected_size);
         assert_eq!(inspected.package().sha256(), expected_sha256);
         assert_eq!(receiver.temporary_bytes_in_use(), expected_size);
