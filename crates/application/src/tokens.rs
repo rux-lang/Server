@@ -11,7 +11,7 @@ use time::OffsetDateTime;
 use crate::{
     ApiTokenId, ApiTokenRecord, AuditEvent, Clock, CredentialGenerator, NewApiToken,
     RegistryTransaction, RepositoryConflict, RepositoryError, RepositoryErrorKind, SecretHash,
-    TokenAuthorizationTransaction, TokenRepository, TokenScope, UserId, WriteOutcome,
+    TokenAuthorizationTransaction, TokenRepository, TokenScope, UserId, UserRecord, WriteOutcome,
 };
 
 const TOKEN_PREFIX: &str = "rux_pat_";
@@ -67,6 +67,19 @@ pub struct AuthorizedApiToken {
     pub user_id: UserId,
 }
 
+/// What one credential proves, without asserting any particular scope.
+///
+/// Carries the owner's GitHub login and the token's own scopes so a client can
+/// confirm a credential before relying on it. It deliberately holds no database
+/// identifier: this is the one token response an unscoped credential can reach.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApiTokenIdentity {
+    pub github_login: String,
+    pub token_prefix: String,
+    pub scopes: Vec<TokenScope>,
+    pub expires_at: Option<OffsetDateTime>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApiTokenErrorKind {
     InvalidDisplayName,
@@ -113,6 +126,13 @@ pub trait ApiTokens: Send + Sync {
     async fn list(&self, user_id: UserId) -> Result<Vec<ApiTokenSummary>, ApiTokenError>;
 
     async fn revoke(&self, user_id: UserId, prefix: &str) -> Result<(), ApiTokenError>;
+
+    /// Resolves a raw credential to its owner and scopes, requiring no scope of its own.
+    ///
+    /// This is what lets a client verify a credential before relying on it. Every
+    /// other token operation demands a specific scope, so a `publish` token has no
+    /// other endpoint it can reach without publishing something.
+    async fn identify(&self, credential: &str) -> Result<ApiTokenIdentity, ApiTokenError>;
 }
 
 #[async_trait]
@@ -168,6 +188,26 @@ impl ApiTokenService {
         credential: &str,
         required_scope: TokenScope,
     ) -> Result<AuthorizedApiToken, ApiTokenError> {
+        let (token, user) = self
+            .resolve(transaction, credential, Some(required_scope))
+            .await?;
+        Ok(AuthorizedApiToken {
+            id: token.id,
+            user_id: user.id,
+        })
+    }
+
+    /// Resolves one credential to its token and owner, optionally requiring a scope.
+    ///
+    /// The scope is checked before the owner is loaded and before the token is
+    /// touched, so a credential rejected for scope leaves `last_used_at` alone
+    /// and cannot probe whether an account exists.
+    async fn resolve<T: TokenAuthorizationTransaction + ?Sized>(
+        &self,
+        transaction: &mut T,
+        credential: &str,
+        required_scope: Option<TokenScope>,
+    ) -> Result<(ApiTokenRecord, UserRecord), ApiTokenError> {
         let secret = decode_token(credential).ok_or_else(authentication_required)?;
         let token = transaction
             .lock_token_by_secret_hash(hash_secret(&secret))
@@ -175,7 +215,7 @@ impl ApiTokenService {
             .map_err(|_| unavailable())?
             .filter(|token| token_is_active(token, self.clock.now()))
             .ok_or_else(authentication_required)?;
-        if !token.scopes.contains(&required_scope) {
+        if required_scope.is_some_and(|required| !token.scopes.contains(&required)) {
             return Err(ApiTokenError::new(ApiTokenErrorKind::InsufficientScope));
         }
         let user = transaction
@@ -188,10 +228,7 @@ impl ApiTokenService {
             .touch_token(token.id, self.clock.now())
             .await
             .map_err(|_| unavailable())?;
-        Ok(AuthorizedApiToken {
-            id: token.id,
-            user_id: user.id,
-        })
+        Ok((token, user))
     }
 }
 
@@ -341,6 +378,35 @@ impl ApiTokens for ApiTokenService {
             }
         }
         transaction.commit().await.map_err(|_| unavailable())
+    }
+
+    async fn identify(&self, credential: &str) -> Result<ApiTokenIdentity, ApiTokenError> {
+        let mut transaction = self
+            .repository
+            .begin_tokens()
+            .await
+            .map_err(|_| unavailable())?;
+        let resolved = self.resolve(&mut *transaction, credential, None).await;
+        let (token, user) = match resolved {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                let _ = transaction.rollback().await;
+                return Err(error);
+            }
+        };
+        // The owner is filtered to a live account with a login, so the identity
+        // is complete by the time resolve returns.
+        let Some(github_login) = user.github_login else {
+            let _ = transaction.rollback().await;
+            return Err(authentication_required());
+        };
+        transaction.commit().await.map_err(|_| unavailable())?;
+        Ok(ApiTokenIdentity {
+            github_login,
+            token_prefix: token.token_prefix,
+            scopes: token.scopes,
+            expires_at: token.expires_at,
+        })
     }
 }
 
@@ -821,6 +887,58 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["api_token_created", "api_token_revoked"]
         );
+    }
+
+    #[tokio::test]
+    async fn identify_resolves_any_active_token_without_requiring_a_scope() {
+        let repository = FakeRepository::default();
+        repository.0.lock().expect("state should work").user =
+            Some(active_user(UserId::new(Uuid::from_u128(7))));
+        let service = service(&repository, VecDeque::from([[9; 32]]));
+        let issued = service
+            .issue(
+                UserId::new(Uuid::from_u128(7)),
+                IssueApiToken {
+                    display_name: "publisher".into(),
+                    scopes: vec![TokenScope::Publish],
+                    expires_at: Some(NOW + Duration::days(1)),
+                },
+            )
+            .await
+            .expect("token should issue");
+
+        // A publish-only token has no other endpoint it can reach, so this is
+        // the one call that must succeed for it without publishing anything.
+        let identity = service
+            .identify(&issued.credential)
+            .await
+            .expect("an active token should identify");
+        assert_eq!(identity.github_login, "octocat");
+        assert_eq!(identity.scopes, [TokenScope::Publish]);
+        assert_eq!(identity.token_prefix, issued.token.token_prefix);
+        assert_eq!(identity.expires_at, Some(NOW + Duration::days(1)));
+
+        let unknown = service
+            .identify("rux_pat_AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE")
+            .await
+            .expect_err("an unknown credential should not identify");
+        assert_eq!(unknown.kind(), ApiTokenErrorKind::AuthenticationRequired);
+
+        let malformed = service
+            .identify("not-a-token")
+            .await
+            .expect_err("a malformed credential should not identify");
+        assert_eq!(malformed.kind(), ApiTokenErrorKind::AuthenticationRequired);
+
+        service
+            .revoke(UserId::new(Uuid::from_u128(7)), &issued.token.token_prefix)
+            .await
+            .expect("owner can revoke");
+        let revoked = service
+            .identify(&issued.credential)
+            .await
+            .expect_err("a revoked token should stop identifying");
+        assert_eq!(revoked.kind(), ApiTokenErrorKind::AuthenticationRequired);
     }
 
     #[tokio::test]

@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
-use axum::http::header::CACHE_CONTROL;
+use axum::http::header::{AUTHORIZATION, CACHE_CONTROL};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get};
 use axum::{Json, Router};
 use rux_application::{
-    ApiTokenErrorKind, ApiTokenStatus, ApiTokenSummary, ApiTokens, Authentication, IssueApiToken,
-    IssuedApiToken, TokenScope, UserId,
+    ApiTokenErrorKind, ApiTokenIdentity, ApiTokenStatus, ApiTokenSummary, ApiTokens,
+    Authentication, IssueApiToken, IssuedApiToken, TokenScope, UserId,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -35,6 +35,7 @@ pub fn router(
     allowed_web_origin: String,
 ) -> Router {
     Router::new()
+        .route("/v1/me", get(identify))
         .route("/v1/tokens", get(list_tokens).post(issue_token))
         .route("/v1/tokens/{token_prefix}", delete(revoke_token))
         .with_state(TokenState {
@@ -123,6 +124,45 @@ pub(crate) struct IssuedTokenDocument {
     credential: String,
     #[serde(flatten)]
     token: TokenDocument,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct IdentityDocument {
+    github_login: String,
+    token_prefix: String,
+    scopes: Vec<TokenScopeDocument>,
+    #[schema(format = "date-time")]
+    expires_at: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/me",
+    security(("bearer_token" = [])),
+    responses(
+        (status = 200, description = "The identity a bearer token proves", body = DataEnvelope<IdentityDocument>),
+        (status = 401, response = ProblemResponse),
+        (status = 503, response = ProblemResponse)
+    )
+)]
+pub(crate) async fn identify(State(state): State<TokenState>, headers: HeaderMap) -> Response {
+    // The only token endpoint that asserts no scope: a client has to be able to
+    // check a credential before relying on it, and every other bearer route
+    // demands a scope the credential may legitimately lack.
+    let Some(credential) = bearer_credential(&headers) else {
+        return token_problem(ApiTokenErrorKind::AuthenticationRequired).into_response();
+    };
+    match state.tokens.identify(&credential).await {
+        Ok(identity) => {
+            let mut response = Json(DataEnvelope::new(identity_document(identity))).into_response();
+            response
+                .headers_mut()
+                .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            response
+        }
+        Err(error) => token_problem(error.kind()).into_response(),
+    }
 }
 
 #[utoipa::path(
@@ -290,6 +330,29 @@ fn token_document(token: ApiTokenSummary) -> TokenDocument {
     }
 }
 
+fn identity_document(identity: ApiTokenIdentity) -> IdentityDocument {
+    IdentityDocument {
+        github_login: identity.github_login,
+        token_prefix: identity.token_prefix,
+        scopes: identity.scopes.into_iter().map(Into::into).collect(),
+        expires_at: identity.expires_at.map(timestamp),
+    }
+}
+
+/// The raw credential from an `Authorization: Bearer` header, if the header
+/// carries one that could plausibly be a token.
+fn bearer_credential(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+        .filter(|credential| {
+            !credential.is_empty() && !credential.bytes().any(|byte| byte.is_ascii_whitespace())
+        })
+        .map(str::to_owned)
+}
+
 fn issued_token_document(token: IssuedApiToken) -> IssuedTokenDocument {
     IssuedTokenDocument {
         credential: token.credential,
@@ -387,6 +450,7 @@ mod tests {
 
     const SESSION: &str = "session";
     const CSRF: &str = "csrf";
+    const BEARER: &str = "rux_pat_AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
 
     #[derive(Default)]
     struct FakeAuthentication;
@@ -499,6 +563,20 @@ mod tests {
                 .push((user_id, prefix.into()));
             Ok(())
         }
+
+        async fn identify(&self, credential: &str) -> Result<ApiTokenIdentity, ApiTokenError> {
+            if credential != BEARER {
+                return Err(ApiTokenError::new(
+                    ApiTokenErrorKind::AuthenticationRequired,
+                ));
+            }
+            Ok(ApiTokenIdentity {
+                github_login: "octocat".into(),
+                token_prefix: "rux_pat_AQEBAQEB".into(),
+                scopes: vec![TokenScope::Publish],
+                expires_at: None,
+            })
+        }
     }
 
     fn authenticated_session() -> AuthenticatedSession {
@@ -538,6 +616,73 @@ mod tests {
                 format!("{SESSION_COOKIE}={SESSION}; {CSRF_COOKIE}={CSRF}"),
             )
             .header(CSRF_HEADER, CSRF)
+    }
+
+    #[tokio::test]
+    async fn identify_reports_the_owner_and_scopes_of_a_bearer_token() {
+        let response = test_router(Arc::new(FakeTokens::default()))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/me")
+                    .header(AUTHORIZATION, format!("Bearer {BEARER}"))
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let document: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON");
+        assert_eq!(document["data"]["github_login"], "octocat");
+        assert_eq!(document["data"]["scopes"][0], "publish");
+        assert_eq!(document["data"]["token_prefix"], "rux_pat_AQEBAQEB");
+        // The endpoint proves a credential; it must never echo one back.
+        assert!(document["data"].get("credential").is_none());
+    }
+
+    #[tokio::test]
+    async fn identify_needs_a_bearer_token_and_no_session_or_origin() {
+        let missing = test_router(Arc::new(FakeTokens::default()))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/me")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+        let unknown = test_router(Arc::new(FakeTokens::default()))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/me")
+                    .header(AUTHORIZATION, "Bearer rux_pat_not_a_real_credential")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(unknown.status(), StatusCode::UNAUTHORIZED);
+
+        // A session cookie is not a substitute: this route is bearer-only, which
+        // is what makes it reachable from the CLI with no browser involved.
+        let session_only = test_router(Arc::new(FakeTokens::default()))
+            .oneshot(
+                browser_request("GET", "/v1/me")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(session_only.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
