@@ -7,7 +7,7 @@ mod parser;
 pub use error::{ManifestError, ManifestErrorCode, ManifestErrors, SourcePosition, SourceSpan};
 pub use model::{
     BuildConfiguration, BuildMode, DefineValue, Dependency, DependencySource,
-    EffectiveBuildConfiguration, License, Manifest, ManifestHeader, ManifestKind, ManifestPath,
+    EffectiveBuildConfiguration, Manifest, ManifestHeader, ManifestKind, ManifestPath,
     Optimization, PackageManifest, PackageType, WebUrl, WorkspaceManifest,
 };
 pub use parser::{ValidationProfile, parse_manifest, parse_manifest_with_profile};

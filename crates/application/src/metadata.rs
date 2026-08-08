@@ -274,7 +274,7 @@ mod tests {
             homepage_url: None,
             readme: None,
             license_expression: None,
-            license_file: None,
+            license_url: None,
             normalized_manifest: Map::new(),
             artifact_sha256: ArtifactSha256::new([1; 32]),
             artifact_size: 1,

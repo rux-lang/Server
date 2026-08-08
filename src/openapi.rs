@@ -92,7 +92,6 @@ use crate::contract::{Problem, ProblemResponse, ValidationError};
         crate::metadata::PackageTypeDocument,
         crate::metadata::PackageDependencyDocument,
         crate::metadata::ReadmeDocument,
-        crate::metadata::LicenseDocument,
         crate::metadata::ChecksumDocument,
         crate::search::PackageSearchDocument,
         crate::search::SearchPageMeta,
@@ -454,7 +453,6 @@ mod tests {
             "PackageSummaryDocument",
             "PackageVersionDocument",
             "ReadmeDocument",
-            "LicenseDocument",
             "ChecksumDocument",
         ] {
             assert!(schemas.get(schema).is_some(), "missing {schema} schema");
@@ -463,6 +461,16 @@ mod tests {
             schemas["PackageVersionDocument"]["properties"]["download_url"]["type"],
             "string"
         );
+        // License terms are two independent nullable strings rather than a
+        // tagged document, and the archive carries no license text.
+        for property in ["license", "license_url"] {
+            assert!(
+                schemas["PackageVersionDocument"]["properties"]
+                    .get(property)
+                    .is_some(),
+                "missing {property} property"
+            );
+        }
     }
 
     fn assert_download_contract(document: &Value) {

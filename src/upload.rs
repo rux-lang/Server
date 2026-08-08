@@ -555,7 +555,8 @@ Name = "Example"
 Version = "1.2.3"
 Type = "Source"
 Readme = "README.md"
-LicenseFile = "LICENSE"
+License = "MIT"
+LicenseUrl = "https://example.com/LICENSE"
 "#;
     const LOCAL_ONLY_MANIFEST: &str = r#"[Manifest]
 Version = 1
@@ -668,10 +669,6 @@ Type = "Source"
         assert_eq!(inspected.inspection().source_file_count(), 1);
         assert_eq!(inspected.inspection().source_line_count(), 2);
         assert_eq!(inspected.inspection().readme(), Some("# Example\n"));
-        assert_eq!(
-            inspected.inspection().license_file(),
-            Some("Example license")
-        );
         assert_eq!(inspected.package().byte_size(), expected_size);
         assert_eq!(inspected.package().sha256(), expected_sha256);
         assert_eq!(receiver.temporary_bytes_in_use(), expected_size);

@@ -8,9 +8,9 @@ use url::Url;
 
 use crate::error::{ManifestError, ManifestErrorCode, ManifestErrors, SourcePosition, SourceSpan};
 use crate::model::{
-    BuildConfiguration, BuildOverrides, DefineValue, Dependency, DependencySource, License,
-    Manifest, ManifestHeader, ManifestKind, ManifestPath, Optimization, PackageManifest,
-    PackageType, WebUrl, WorkspaceManifest,
+    BuildConfiguration, BuildOverrides, DefineValue, Dependency, DependencySource, Manifest,
+    ManifestHeader, ManifestKind, ManifestPath, Optimization, PackageManifest, PackageType, WebUrl,
+    WorkspaceManifest,
 };
 use crate::{
     MANIFEST_MAX_AUTHOR_BYTES, MANIFEST_MAX_AUTHORS, MANIFEST_MAX_BYTES,
@@ -309,7 +309,7 @@ impl<'source> Parser<'source> {
                 "Authors",
                 "Keywords",
                 "License",
-                "LicenseFile",
+                "LicenseUrl",
                 "Repository",
                 "Homepage",
                 "Readme",
@@ -339,6 +339,7 @@ impl<'source> Parser<'source> {
         let authors = self.parse_authors(table);
         let keywords = self.parse_keywords(table);
         let license = self.parse_license(table);
+        let license_url = self.optional_url(table, "LicenseUrl", &["Package"]);
         let repository = self.optional_url(table, "Repository", &["Package"]);
         let homepage = self.optional_url(table, "Homepage", &["Package"]);
         let readme = self.optional_path(table, "Readme", &["Package"], false);
@@ -360,6 +361,7 @@ impl<'source> Parser<'source> {
             authors: authors?,
             keywords: keywords?,
             license,
+            license_url,
             repository,
             homepage,
             readme,
@@ -567,47 +569,27 @@ impl<'source> Parser<'source> {
         valid.then_some(result)
     }
 
-    fn parse_license(&mut self, table: &Table) -> Option<License> {
-        match (table.get("License"), table.get("LicenseFile")) {
-            (Some(expression), Some(file)) => {
-                self.push(
-                    ManifestErrorCode::ConflictingSections,
-                    path(&["Package", "LicenseFile"]),
-                    file.span(),
-                    "License and LicenseFile are mutually exclusive",
-                );
-                let _ = self.item_string(expression, &["Package", "License"]);
-                None
-            }
-            (Some(item), None) => {
-                let (value, span) = self.item_string(item, &["Package", "License"])?;
-                if !self.validate_nonempty_bounded(
-                    value,
-                    MANIFEST_MAX_LICENSE_OR_RANGE_BYTES,
-                    path(&["Package", "License"]),
-                    span.clone(),
-                ) {
-                    return None;
-                }
-                if let Err(error) = spdx::Expression::parse(value) {
-                    self.push(
-                        ManifestErrorCode::InvalidSpdxExpression,
-                        path(&["Package", "License"]),
-                        span,
-                        format!("invalid SPDX expression: {error}"),
-                    );
-                    None
-                } else {
-                    Some(License::Expression(value.to_owned()))
-                }
-            }
-            (None, Some(item)) => self
-                .item_string(item, &["Package", "LicenseFile"])
-                .and_then(|(value, span)| {
-                    self.validate_path(value, span, &["Package", "LicenseFile"], false)
-                })
-                .map(License::File),
-            (None, None) => None,
+    fn parse_license(&mut self, table: &Table) -> Option<String> {
+        let item = table.get("License")?;
+        let (value, span) = self.item_string(item, &["Package", "License"])?;
+        if !self.validate_nonempty_bounded(
+            value,
+            MANIFEST_MAX_LICENSE_OR_RANGE_BYTES,
+            path(&["Package", "License"]),
+            span.clone(),
+        ) {
+            return None;
+        }
+        if let Err(error) = spdx::Expression::parse(value) {
+            self.push(
+                ManifestErrorCode::InvalidSpdxExpression,
+                path(&["Package", "License"]),
+                span,
+                format!("invalid SPDX expression: {error}"),
+            );
+            None
+        } else {
+            Some(value.to_owned())
         }
     }
 

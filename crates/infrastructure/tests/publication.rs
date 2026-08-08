@@ -517,7 +517,7 @@ fn metadata(namespace: &str, package: &str, version: &str) -> PublicationMetadat
         homepage_url: None,
         readme: Some(("README.md".into(), "# Example".into())),
         license_expression: Some("MIT".into()),
-        license_file: None,
+        license_url: None,
         normalized_manifest: Map::new(),
         artifact_file_count: 2,
         artifact_expanded_bytes: 2048,

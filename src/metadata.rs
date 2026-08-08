@@ -62,7 +62,8 @@ pub(crate) struct PackageVersionDocument {
     #[schema(value_type = Object)]
     normalized_manifest: Value,
     readme: Option<ReadmeDocument>,
-    license: Option<LicenseDocument>,
+    license: Option<String>,
+    license_url: Option<String>,
     checksum: ChecksumDocument,
     artifact_size: u64,
     artifact_file_count: u32,
@@ -100,13 +101,6 @@ pub(crate) struct PackageDependencyDocument {
 pub(crate) struct ReadmeDocument {
     path: String,
     source: String,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum LicenseDocument {
-    Expression { expression: String },
-    File { path: String, source: String },
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -207,7 +201,8 @@ fn version_document(version: &PackageVersionMetadataRecord) -> PackageVersionDoc
                 path: path.clone(),
                 source: source.clone(),
             }),
-        license: license_document(version),
+        license: version.license_expression.clone(),
+        license_url: version.license_url.clone(),
         checksum: ChecksumDocument {
             algorithm: "sha256",
             digest: hexadecimal(version.artifact_sha256.as_bytes()),
@@ -250,20 +245,6 @@ fn dependency_document(dependency: &DependencyRecord) -> PackageDependencyDocume
         target_namespace: dependency.target_namespace.as_str().to_owned(),
         target_package: dependency.target_package.as_str().to_owned(),
         version_range: dependency.version_range.as_str().to_owned(),
-    }
-}
-
-fn license_document(version: &PackageVersionMetadataRecord) -> Option<LicenseDocument> {
-    match (&version.license_expression, &version.license_file) {
-        (Some(expression), None) => Some(LicenseDocument::Expression {
-            expression: expression.clone(),
-        }),
-        (None, Some((path, source))) => Some(LicenseDocument::File {
-            path: path.clone(),
-            source: source.clone(),
-        }),
-        (None, None) => None,
-        (Some(_), Some(_)) => unreachable!("persistence enforces mutually exclusive licenses"),
     }
 }
 
@@ -345,7 +326,6 @@ mod tests {
 
     struct StubMetadata {
         error: Option<PackageMetadataErrorKind>,
-        file_license: bool,
     }
 
     #[async_trait]
@@ -370,13 +350,13 @@ mod tests {
             if let Some(kind) = self.error {
                 return Err(PackageMetadataError::new(kind));
             }
-            Ok(version_fixture(self.file_license))
+            Ok(version_fixture())
         }
     }
 
     #[tokio::test]
     async fn package_summary_preserves_display_names_and_returns_canonical_path() {
-        let response = test_router(None, false)
+        let response = test_router(None)
             .oneshot(request("/v1/packages/rux-tools/example-pkg"))
             .await
             .unwrap();
@@ -394,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn exact_version_exposes_safe_complete_metadata() {
-        let response = test_router(None, false)
+        let response = test_router(None)
             .oneshot(request("/v1/packages/rux-tools/example-pkg/1.2.3+linux"))
             .await
             .unwrap();
@@ -406,10 +386,8 @@ mod tests {
             data["readme"],
             json!({"path": "README.md", "source": "# Example\n"})
         );
-        assert_eq!(
-            data["license"],
-            json!({"kind": "expression", "expression": "MIT"})
-        );
+        assert_eq!(data["license"], "MIT");
+        assert_eq!(data["license_url"], "https://example.com/LICENSE.md");
         assert_eq!(data["checksum"]["algorithm"], "sha256");
         assert_eq!(data["checksum"]["digest"], "04".repeat(32));
         assert_eq!(data["dependencies"][0]["alias"], "Json");
@@ -431,18 +409,6 @@ mod tests {
         ] {
             assert!(!serialized.contains(forbidden));
         }
-    }
-
-    #[tokio::test]
-    async fn file_license_uses_the_tagged_source_shape() {
-        let response = test_router(None, true)
-            .oneshot(request("/v1/packages/rux-tools/example-pkg/1.2.3+linux"))
-            .await
-            .unwrap();
-        assert_eq!(
-            response_json(response).await["data"]["license"],
-            json!({"kind": "file", "path": "LICENSE.md", "source": "License text"})
-        );
     }
 
     #[tokio::test]
@@ -480,7 +446,7 @@ mod tests {
             ),
         ];
         for (kind, status, code) in cases {
-            let response = test_router(Some(kind), false)
+            let response = test_router(Some(kind))
                 .oneshot(request("/v1/packages/rux/example/1.0.0"))
                 .await
                 .unwrap();
@@ -489,11 +455,8 @@ mod tests {
         }
     }
 
-    fn test_router(error: Option<PackageMetadataErrorKind>, file_license: bool) -> Router {
-        router(Arc::new(StubMetadata {
-            error,
-            file_license,
-        }))
+    fn test_router(error: Option<PackageMetadataErrorKind>) -> Router {
+        router(Arc::new(StubMetadata { error }))
     }
 
     fn request(uri: &str) -> Request<Body> {
@@ -512,7 +475,7 @@ mod tests {
         }
     }
 
-    fn version_fixture(file_license: bool) -> PackageVersionMetadataRecord {
+    fn version_fixture() -> PackageVersionMetadataRecord {
         let mut manifest = Map::new();
         manifest.insert("manifest".into(), json!({"version": 1}));
         PackageVersionMetadataRecord {
@@ -526,8 +489,8 @@ mod tests {
             repository_url: Some("https://example.test/repository".into()),
             homepage_url: None,
             readme: Some(("README.md".into(), "# Example\n".into())),
-            license_expression: (!file_license).then(|| "MIT".into()),
-            license_file: file_license.then(|| ("LICENSE.md".into(), "License text".into())),
+            license_expression: Some("MIT".into()),
+            license_url: Some("https://example.com/LICENSE.md".into()),
             normalized_manifest: manifest,
             artifact_sha256: ArtifactSha256::new([4; 32]),
             artifact_size: 1024,

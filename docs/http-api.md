@@ -144,9 +144,9 @@ Malformed multipart requests, invalid artifact diagnostics, authentication and s
 
 Package metadata is public and unauthenticated. `GET /v1/packages/{namespace}/{package}` returns the version-independent package identity, package creation time, and canonical package URL. It deliberately does not select a representative release or return version history. Namespace and package lookups use normalized identities while the response preserves the stored display spelling.
 
-`GET /v1/packages/{namespace}/{package}/{version}` returns one exact strict Semantic Version, including build metadata. It exposes the stored normalized manifest; package type, minimum Rux version, description, authors, keywords, catalog URLs, and dependencies; raw referenced README source; license data; the artifact SHA-256 and bounded artifact/source metrics; publication time; and current yank state. Dependencies are ordered by normalized alias. Authors and keywords retain manifest order.
+`GET /v1/packages/{namespace}/{package}/{version}` returns one exact strict Semantic Version, including build metadata. It exposes the stored normalized manifest; package type, minimum Rux version, description, authors, keywords, catalog URLs, and dependencies; raw referenced README source; the SPDX license expression and license URL; the artifact SHA-256 and bounded artifact/source metrics; publication time; and current yank state. Dependencies are ordered by normalized alias. Authors and keywords retain manifest order.
 
-README data is either `null` or an object containing `path` and unrendered UTF-8 `source`. License data is either `null`, an expression object, or a file object:
+README data is either `null` or an object containing `path` and unrendered UTF-8 `source`. `license` is either `null` or an SPDX expression string, and `license_url` is either `null` or an absolute HTTP(S) URL; the two are independent, so a response may carry either, both, or neither:
 
 ```json
 {
@@ -154,10 +154,8 @@ README data is either `null` or an object containing `path` and unrendered UTF-8
     "path": "README.md",
     "source": "# Example\n"
   },
-  "license": {
-    "kind": "expression",
-    "expression": "MIT OR Apache-2.0"
-  },
+  "license": "MIT OR Apache-2.0",
+  "license_url": "https://github.com/rux-lang/example/blob/main/LICENSE.md",
   "checksum": {
     "algorithm": "sha256",
     "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -165,7 +163,7 @@ README data is either `null` or an object containing `path` and unrendered UTF-8
 }
 ```
 
-A file license instead uses `{"kind":"file","path":"LICENSE.md", "source":"..."}`. Source is returned verbatim; browser sanitization and rendering are not API responsibilities.
+The registry stores no license text of its own: `license_url` points at it instead. README source is returned verbatim; browser sanitization and rendering are not API responsibilities.
 
 Both responses expose host-independent relative canonical URLs. Namespace and package path segments use normalized spelling; the version path segment retains the exact version. Exact-version responses contain both `package_url` and their own `canonical_url`. The publication response's `Location` header uses the same canonical version-path builder. Exact-version responses also contain `download_url`, the host-independent canonical download route built from normalized namespace and package segments plus the exact version. Clients never guess a URL from internal storage keys.
 

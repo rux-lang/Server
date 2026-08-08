@@ -15,7 +15,6 @@ Example.ruxpkg
 │   ├── Main.rux
 │   └── Nested/Other.rux
 ├── README.md       # when referenced by Package.Readme
-├── LICENSE         # when referenced by Package.LicenseFile
 └── Assets/         # optional additional regular files
 ```
 
@@ -27,7 +26,7 @@ Directory entries are optional because parent directories may be implicit. Addit
 
 Publication supplies `Rux.toml` separately from the `.ruxpkg`. The root manifest in the archive must match those uploaded bytes exactly, including comments, whitespace, and line endings. The matching source must be UTF-8 and pass the manifest publication validation profile.
 
-When `Package.Readme` or `Package.LicenseFile` is present, its exact path must identify a regular file in the archive. Referenced README and license files must be UTF-8. Their bounded text is returned by artifact inspection for later publication metadata; an SPDX `Package.License` expression does not reference an archive entry.
+When `Package.Readme` is present, its exact path must identify a regular file in the archive, and that file must be UTF-8. Its bounded text is returned by artifact inspection for later publication metadata. Neither `Package.License` nor `Package.LicenseUrl` references an archive entry, so an archive carries no license text of its own; a `LICENSE` file included beside the sources is an ordinary additional regular file.
 
 ## Portable entry paths
 
@@ -53,7 +52,7 @@ Limits are inclusive and use binary mebibytes:
 | ZIP entries, including directories |        1,024 |
 | One regular file                   |        2 MiB |
 | One `Src/**/*.rux` source          |        2 MiB |
-| Referenced README or license       |        1 MiB |
+| Referenced README                  |        1 MiB |
 | Embedded `Rux.toml`                | 65,536 bytes |
 | Entry path                         |  2,048 bytes |
 

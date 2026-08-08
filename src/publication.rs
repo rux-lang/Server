@@ -12,7 +12,7 @@ use rux_application::{
     PublicationMetadata, Publications, PublishedPackageVersion,
 };
 use rux_manifest::{
-    BuildMode, DefineValue, DependencySource, License, Manifest, ManifestKind, Optimization,
+    BuildMode, DefineValue, DependencySource, Manifest, ManifestKind, Optimization,
     PackageManifest, PackageType,
 };
 use serde::Serialize;
@@ -147,17 +147,6 @@ fn publication_metadata(
             })
         })
         .collect::<Option<Vec<_>>>()?;
-    let (license_expression, license_file) = match package.license() {
-        Some(License::Expression(expression)) => (Some(expression.clone()), None),
-        Some(License::File(path)) => (
-            None,
-            Some((
-                path.as_str().to_owned(),
-                inspection.license_file()?.to_owned(),
-            )),
-        ),
-        None => (None, None),
-    };
     let readme = package.readme().map(|path| {
         (
             path.as_str().to_owned(),
@@ -179,8 +168,8 @@ fn publication_metadata(
         repository_url: package.repository().map(|value| value.as_str().to_owned()),
         homepage_url: package.homepage().map(|value| value.as_str().to_owned()),
         readme,
-        license_expression,
-        license_file,
+        license_expression: package.license().map(str::to_owned),
+        license_url: package.license_url().map(|value| value.as_str().to_owned()),
         normalized_manifest: normalized_manifest(manifest, package),
         artifact_file_count: inspection.file_count(),
         artifact_expanded_bytes: inspection.expanded_bytes(),
@@ -241,15 +230,12 @@ fn normalized_manifest(manifest: &Manifest, package: &PackageManifest) -> JsonOb
             ),
         );
     }
-    match package.license() {
-        Some(License::Expression(value)) => {
-            package_json.insert("license".into(), json!(value));
-        }
-        Some(License::File(value)) => {
-            package_json.insert("license_file".into(), json!(value.as_str()));
-        }
-        None => {}
-    }
+    insert_optional(&mut package_json, "license", package.license());
+    insert_optional(
+        &mut package_json,
+        "license_url",
+        package.license_url().map(rux_manifest::WebUrl::as_str),
+    );
     insert_optional(
         &mut package_json,
         "repository",

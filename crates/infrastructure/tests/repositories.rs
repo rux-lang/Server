@@ -310,7 +310,7 @@ async fn complete_package_version_aggregate_round_trips(pool: PgPool) -> TestRes
             homepage_url: None,
             readme: Some(("README.md".into(), "# Example".into())),
             license_expression: Some("MIT".into()),
-            license_file: None,
+            license_url: Some("https://example.com/LICENSE".into()),
             normalized_manifest: manifest,
             artifact_sha256: ArtifactSha256::new([4; 32]),
             artifact_size: 1024,
@@ -368,7 +368,10 @@ async fn complete_package_version_aggregate_round_trips(pool: PgPool) -> TestRes
         Some(("README.md".into(), "# Example".into()))
     );
     assert_eq!(metadata.license_expression.as_deref(), Some("MIT"));
-    assert!(metadata.license_file.is_none());
+    assert_eq!(
+        metadata.license_url.as_deref(),
+        Some("https://example.com/LICENSE")
+    );
     assert_eq!(metadata.normalized_manifest["Manifest"], "normalized");
     assert_eq!(metadata.dependencies[0].alias.as_str(), "Alpha");
     assert_eq!(metadata.artifact_sha256, ArtifactSha256::new([4; 32]));
@@ -876,7 +879,7 @@ fn resolver_package_version(
         homepage_url: None,
         readme: None,
         license_expression: None,
-        license_file: None,
+        license_url: None,
         normalized_manifest: Map::new(),
         artifact_sha256: ArtifactSha256::new([checksum_byte; 32]),
         artifact_size: 1024,

@@ -1,7 +1,7 @@
 use rux_domain::SemanticVersion;
 use rux_manifest::{
-    BuildMode, DefineValue, DependencySource, License, MANIFEST_MAX_BYTES, ManifestErrorCode,
-    ManifestKind, Optimization, PackageType, ValidationProfile, parse_manifest,
+    BuildMode, DefineValue, DependencySource, MANIFEST_MAX_BYTES, ManifestErrorCode, ManifestKind,
+    Optimization, PackageType, ValidationProfile, WebUrl, parse_manifest,
     parse_manifest_with_profile,
 };
 
@@ -25,6 +25,7 @@ Description = "Example package"
 Authors = ["Rux Contributors <info@rux-lang.dev>"]
 Keywords = ["Registry", "Package-Manager"]
 License = "MIT OR Apache-2.0"
+LicenseUrl = "https://github.com/rux-lang/example/blob/main/LICENSE.md"
 Repository = "https://github.com/rux-lang/example"
 Homepage = "https://example.dev/docs"
 Readme = "README.md"
@@ -76,9 +77,6 @@ Channel = "Stable"
     assert_eq!(package.description(), Some("Example package"));
     assert_eq!(package.authors().len(), 1);
     assert_eq!(package.keywords()[0].normalized(), "registry");
-    assert!(
-        matches!(package.license(), Some(License::Expression(value)) if value == "MIT OR Apache-2.0")
-    );
     assert_eq!(
         package.repository().expect("repository").as_str(),
         "https://github.com/rux-lang/example"
@@ -125,6 +123,36 @@ Channel = "Stable"
         release.defines().get("Channel"),
         Some(&DefineValue::String("Stable".to_owned()))
     );
+}
+
+#[test]
+fn an_spdx_expression_and_a_license_url_are_independent() {
+    // Every combination is legal: the expression names the terms and the URL
+    // links their text, and neither implies the other.
+    for (fields, expression, url) in [
+        (
+            "License = \"MIT\"\nLicenseUrl = \"https://example.com/LICENSE\"\n",
+            Some("MIT"),
+            Some("https://example.com/LICENSE"),
+        ),
+        ("License = \"MIT\"\n", Some("MIT"), None),
+        (
+            "LicenseUrl = \"https://example.com/LICENSE\"\n",
+            None,
+            Some("https://example.com/LICENSE"),
+        ),
+        ("", None, None),
+    ] {
+        let source = format!(
+            "{HEADER}\n[Package]\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"Source\"\n{fields}"
+        );
+        let manifest = parse_manifest(&source).expect("package should parse");
+        let ManifestKind::Package(package) = manifest.kind() else {
+            panic!("expected package manifest");
+        };
+        assert_eq!(package.license(), expression);
+        assert_eq!(package.license_url().map(WebUrl::as_str), url);
+    }
 }
 
 #[test]
@@ -400,7 +428,7 @@ Name = "Example"
 Version = "1.0.0"
 Type = "Source"
 License = "not-a-license"
-LicenseFile = "../LICENSE"
+LicenseUrl = "ftp://example.com/LICENSE"
 Repository = "ssh://git@example.com/repo"
 Homepage = "https://user:secret@example.com"
 Readme = 'docs\README.md'
@@ -409,7 +437,8 @@ Readme = 'docs\README.md'
     assert_eq!(
         codes(&source),
         vec![
-            ManifestErrorCode::ConflictingSections,
+            ManifestErrorCode::InvalidSpdxExpression,
+            ManifestErrorCode::InvalidUrl,
             ManifestErrorCode::InvalidUrl,
             ManifestErrorCode::InvalidUrl,
             ManifestErrorCode::InvalidPath,

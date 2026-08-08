@@ -19,7 +19,8 @@ Name = "Example"
 Version = "1.2.3"
 Type = "Source"
 Readme = "README.md"
-LicenseFile = "LICENSE"
+License = "MIT"
+LicenseUrl = "https://example.com/LICENSE"
 "#;
 
 const MINIMAL_MANIFEST: &str = r#"[Manifest]
@@ -59,7 +60,6 @@ fn valid_archive_returns_manifest_text_and_source_statistics() {
     assert_eq!(inspected.source_file_count(), 2);
     assert_eq!(inspected.source_line_count(), 4);
     assert_eq!(inspected.readme(), Some(readme));
-    assert_eq!(inspected.license_file(), Some(license));
     assert_eq!(
         inspected.expanded_bytes(),
         u64::try_from(

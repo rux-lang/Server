@@ -87,7 +87,8 @@ pub struct PackageManifest {
     pub(crate) description: Option<String>,
     pub(crate) authors: Vec<String>,
     pub(crate) keywords: Vec<IdentitySegment>,
-    pub(crate) license: Option<License>,
+    pub(crate) license: Option<String>,
+    pub(crate) license_url: Option<WebUrl>,
     pub(crate) repository: Option<WebUrl>,
     pub(crate) homepage: Option<WebUrl>,
     pub(crate) readme: Option<ManifestPath>,
@@ -132,8 +133,13 @@ impl PackageManifest {
     }
 
     #[must_use]
-    pub fn license(&self) -> Option<&License> {
-        self.license.as_ref()
+    pub fn license(&self) -> Option<&str> {
+        self.license.as_deref()
+    }
+
+    #[must_use]
+    pub fn license_url(&self) -> Option<&WebUrl> {
+        self.license_url.as_ref()
     }
 
     #[must_use]
@@ -171,13 +177,6 @@ pub enum PackageType {
     Library,
     /// Rux sources compiled directly into dependent packages.
     Source,
-}
-
-/// Package licensing metadata.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum License {
-    Expression(String),
-    File(ManifestPath),
 }
 
 /// A validated catalog URL whose submitted spelling is preserved.
