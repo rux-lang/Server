@@ -437,8 +437,9 @@ async fn package_download_statistics_fill_daily_buckets_across_versions(
 ) -> TestResult {
     let repository = PostgresRepository::new(pool);
     let publisher = committed_user(&repository, profile(305, "Statistics-Publisher")).await?;
-    let until = OffsetDateTime::UNIX_EPOCH + Duration::days(100);
-    let since = until - Duration::days(30);
+    let today = OffsetDateTime::UNIX_EPOCH + Duration::days(100);
+    let until = today + Duration::hours(12);
+    let since = today - Duration::days(29);
 
     let mut transaction = repository.begin().await?;
     let namespace = transaction
@@ -471,7 +472,8 @@ async fn package_download_statistics_fill_daily_buckets_across_versions(
         (first.id, since),
         (second.id, since + Duration::days(10)),
         (second.id, since + Duration::days(10) + Duration::hours(2)),
-        (first.id, until),
+        (first.id, today + Duration::hours(6)),
+        (first.id, until + Duration::hours(1)),
     ] {
         transaction.append_download(version_id, occurred_at).await?;
     }
@@ -487,13 +489,13 @@ async fn package_download_statistics_fill_daily_buckets_across_versions(
         .await?
         .expect("package statistics");
     assert_eq!(statistics.start_date, since.date());
-    assert_eq!(statistics.end_date, (until - Duration::days(1)).date());
-    assert_eq!(statistics.total_downloads, 3);
-    assert_eq!(statistics.total_all_time, 4);
+    assert_eq!(statistics.end_date, until.date());
+    assert_eq!(statistics.total_downloads, 4);
+    assert_eq!(statistics.total_all_time, 5);
     assert_eq!(statistics.daily.len(), 30);
     assert_eq!(statistics.daily[0].downloads, 1);
     assert_eq!(statistics.daily[10].downloads, 2);
-    assert_eq!(statistics.daily[29].downloads, 0);
+    assert_eq!(statistics.daily[29].downloads, 1);
     assert!(
         repository
             .package_download_statistics(

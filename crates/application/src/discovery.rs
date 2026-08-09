@@ -266,12 +266,9 @@ impl Discovery for DiscoveryService {
     ) -> Result<PackageDownloadStatisticsRecord, DiscoveryError> {
         let namespace = parse_identity(namespace, DiscoveryErrorKind::InvalidNamespace)?;
         let package = parse_identity(package, DiscoveryErrorKind::InvalidPackage)?;
-        let until = self
-            .clock
-            .now()
-            .to_offset(UtcOffset::UTC)
-            .replace_time(Time::MIDNIGHT);
-        let since = until - Duration::days(DOWNLOAD_STATISTICS_WINDOW_DAYS);
+        let until = self.clock.now();
+        let since = until.to_offset(UtcOffset::UTC).replace_time(Time::MIDNIGHT)
+            - Duration::days(DOWNLOAD_STATISTICS_WINDOW_DAYS - 1);
         self.repository
             .package_download_statistics(&namespace, &package, since, until)
             .await
@@ -619,7 +616,7 @@ mod tests {
             *self.download_window.lock().unwrap() = Some((since, until));
             Ok(Some(PackageDownloadStatisticsRecord {
                 start_date: since.date(),
-                end_date: (until - Duration::days(1)).date(),
+                end_date: until.date(),
                 total_downloads: 0,
                 total_all_time: 0,
                 daily: Vec::new(),
@@ -724,17 +721,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn download_statistics_use_thirty_complete_utc_days() {
+    async fn download_statistics_use_thirty_utc_days_ending_today() {
         let reader = Arc::new(StubReader::default());
         let service = DiscoveryService::new(reader.clone(), Arc::new(FixedClock));
         service.download_statistics("Rux", "Json").await.unwrap();
         let (since, until) = reader.download_window.lock().unwrap().unwrap();
-        assert_eq!(until.hour(), 0);
-        assert_eq!(until.minute(), 0);
-        assert_eq!(until.second(), 0);
+        assert_eq!(until, FixedClock.now());
+        assert_eq!(since.hour(), 0);
+        assert_eq!(since.minute(), 0);
+        assert_eq!(since.second(), 0);
         assert_eq!(
-            until - since,
-            Duration::days(DOWNLOAD_STATISTICS_WINDOW_DAYS)
+            until.date() - since.date(),
+            Duration::days(DOWNLOAD_STATISTICS_WINDOW_DAYS - 1)
         );
     }
 

@@ -358,7 +358,7 @@ pub(crate) async fn highlights(
         ("package" = String, Path, description = "Package identity")
     ),
     responses(
-        (status = 200, description = "Thirty complete UTC days of package downloads across all versions", body = DataEnvelope<PackageDownloadStatisticsDocument>),
+        (status = 200, description = "Thirty UTC days of package downloads across all versions, ending with the partial current day", body = DataEnvelope<PackageDownloadStatisticsDocument>),
         (status = 404, response = ProblemResponse),
         (status = 422, response = ProblemResponse),
         (status = 503, response = ProblemResponse)

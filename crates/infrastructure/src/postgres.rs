@@ -2042,7 +2042,11 @@ impl DiscoveryReader for PostgresRepository {
                  JOIN namespaces n ON n.id = p.namespace_id
                  WHERE n.normalized_name = $1 AND p.normalized_name = $2
              ), days AS (
-                 SELECT generate_series($3, $4 - INTERVAL '1 day', INTERVAL '1 day') AS day
+                 SELECT generate_series(
+                            $3,
+                            date_trunc('day', $4 AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
+                            INTERVAL '1 day'
+                        ) AS day
              ), daily AS (
                  SELECT (event.occurred_at AT TIME ZONE 'UTC')::DATE AS date,
                         count(*)::BIGINT AS downloads

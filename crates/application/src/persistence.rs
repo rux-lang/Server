@@ -703,6 +703,10 @@ pub trait DiscoveryReader: Send + Sync {
         limit: u16,
     ) -> Result<PackageHighlightsRecord, RepositoryError>;
 
+    /// Aggregates download events over `[since, until)`, where `until` is the
+    /// request instant rather than a day boundary. Daily buckets cover every UTC
+    /// calendar day from `since` through the day containing `until` inclusive, so
+    /// the final bucket is a partial day.
     async fn package_download_statistics(
         &self,
         namespace: &IdentitySegment,
