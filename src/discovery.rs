@@ -8,9 +8,9 @@ use axum::routing::get;
 use axum::{Json, Router};
 use rux_application::{
     DOWNLOAD_STATISTICS_WINDOW_DAYS, DependentPackageRecord, Discovery, DiscoveryErrorKind,
-    DiscoveryPageParameters, HighlightPackageRecord, KeywordRecord, POPULARITY_WINDOW_DAYS,
-    PackageDownloadDayRecord, PackageDownloadStatisticsRecord, PackageVersionHistoryRecord,
-    SitemapEntryKind, SitemapEntryRecord,
+    DiscoveryPageParameters, HighlightPackageRecord, KeywordPageParameters, KeywordRecord,
+    POPULARITY_WINDOW_DAYS, PackageDownloadDayRecord, PackageDownloadStatisticsRecord,
+    PackageVersionHistoryRecord, SitemapEntryKind, SitemapEntryRecord,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -51,6 +51,24 @@ pub(crate) struct DiscoveryQuery {
     #[param(minimum = 1, maximum = 100, default = 20)]
     limit: Option<u16>,
     cursor: Option<String>,
+}
+
+/// The keyword index is read by page number, not by cursor, so it has a query
+/// of its own rather than sharing [`DiscoveryQuery`] with the cursor
+/// collections.
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct KeywordQuery {
+    /// `packages` or `name`. Defaults to `packages`.
+    sort: Option<String>,
+    #[param(minimum = 1, maximum = 10000, default = 1)]
+    page: Option<u32>,
+    #[param(minimum = 1, maximum = 100, default = 20)]
+    per_page: Option<u16>,
+    /// Deprecated alias for `per_page`. Supplying both is a validation error.
+    #[param(minimum = 1, maximum = 100)]
+    limit: Option<u16>,
 }
 
 #[derive(Debug, Default, Deserialize, IntoParams)]
@@ -112,9 +130,17 @@ pub(crate) struct KeywordDocument {
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
+pub(crate) struct KeywordPageMeta {
+    total: u64,
+    page: u32,
+    per_page: u16,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub(crate) struct KeywordsResponse {
     data: Vec<KeywordDocument>,
-    meta: DiscoveryPageMeta,
+    meta: KeywordPageMeta,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -255,7 +281,7 @@ pub(crate) async fn package_dependents(
 #[utoipa::path(
     get,
     path = "/keywords",
-    params(DiscoveryQuery),
+    params(KeywordQuery),
     responses(
         (status = 200, description = "Representative-version keyword aggregates", body = KeywordsResponse),
         (status = 422, response = ProblemResponse),
@@ -264,20 +290,35 @@ pub(crate) async fn package_dependents(
 )]
 pub(crate) async fn keywords(
     State(state): State<DiscoveryState>,
-    query: Result<Query<DiscoveryQuery>, QueryRejection>,
+    query: Result<Query<KeywordQuery>, QueryRejection>,
 ) -> Response {
     let Ok(Query(query)) = query else {
         return malformed_query_problem().into_response();
     };
-    match state.discovery.keywords(parameters(query)).await {
+    if query.per_page.is_some() && query.limit.is_some() {
+        return conflicting_page_size_problem().into_response();
+    }
+    let page_size_pointer = if query.limit.is_some() {
+        "/limit"
+    } else {
+        "/per_page"
+    };
+    let parameters = KeywordPageParameters {
+        sort: query.sort,
+        page: query.page,
+        per_page: query.per_page.or(query.limit),
+    };
+    match state.discovery.keywords(parameters).await {
         Ok(page) => Json(KeywordsResponse {
             data: page.items.iter().map(keyword_document).collect(),
-            meta: DiscoveryPageMeta {
-                next_cursor: page.next_cursor,
+            meta: KeywordPageMeta {
+                total: page.total,
+                page: page.page,
+                per_page: page.per_page,
             },
         })
         .into_response(),
-        Err(error) => discovery_problem(error.kind(), false).into_response(),
+        Err(error) => keyword_problem(error.kind(), page_size_pointer).into_response(),
     }
 }
 
@@ -566,6 +607,35 @@ fn malformed_query_problem() -> Problem {
     )
 }
 
+fn conflicting_page_size_problem() -> Problem {
+    invalid_parameter(
+        "conflicting_page_size",
+        "limit is a deprecated alias for per_page; supply only one of them",
+        Some("/per_page"),
+    )
+}
+
+/// The keyword index pages by number, so its validation errors name `sort`,
+/// `page` and `per_page` rather than the cursor collections' `cursor`.
+fn keyword_problem(kind: DiscoveryErrorKind, page_size_pointer: &str) -> Problem {
+    match kind {
+        DiscoveryErrorKind::InvalidSort => {
+            invalid_parameter("invalid_sort", "must be packages or name", Some("/sort"))
+        }
+        DiscoveryErrorKind::InvalidPage => invalid_parameter(
+            "invalid_page",
+            "must be an integer from 1 through 10000",
+            Some("/page"),
+        ),
+        DiscoveryErrorKind::InvalidLimit => invalid_parameter(
+            "invalid_per_page",
+            "must be an integer from 1 through 100",
+            Some(page_size_pointer),
+        ),
+        other => discovery_problem(other, false),
+    }
+}
+
 fn discovery_problem(kind: DiscoveryErrorKind, sitemap: bool) -> Problem {
     match kind {
         DiscoveryErrorKind::InvalidNamespace => invalid_parameter(
@@ -592,6 +662,10 @@ fn discovery_problem(kind: DiscoveryErrorKind, sitemap: bool) -> Problem {
             "must be an opaque cursor issued for the same discovery collection",
             Some("/cursor"),
         ),
+        // Only the keyword index accepts these, and it maps them itself.
+        DiscoveryErrorKind::InvalidSort | DiscoveryErrorKind::InvalidPage => {
+            malformed_query_problem()
+        }
         DiscoveryErrorKind::PackageNotFound => Problem::new(
             StatusCode::NOT_FOUND,
             "package_not_found",
@@ -625,9 +699,9 @@ mod tests {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use rux_application::{
-        DependencyRecord, DiscoveryError, DiscoveryPage, HighlightPackageRecord, KeywordRecord,
-        PackageDownloadDayRecord, PackageDownloadStatisticsRecord, PackageHighlightsRecord,
-        PackageKind, PackageVersionHistoryRecord, SitemapEntryRecord,
+        DependencyRecord, DiscoveryError, DiscoveryPage, HighlightPackageRecord, KeywordPage,
+        KeywordRecord, PackageDownloadDayRecord, PackageDownloadStatisticsRecord,
+        PackageHighlightsRecord, PackageKind, PackageVersionHistoryRecord, SitemapEntryRecord,
     };
     use rux_domain::{IdentitySegment, SemanticVersion, VersionRange};
     use serde_json::{Value, json};
@@ -671,15 +745,17 @@ mod tests {
 
         async fn keywords(
             &self,
-            _parameters: DiscoveryPageParameters,
-        ) -> Result<DiscoveryPage<KeywordRecord>, DiscoveryError> {
+            _parameters: KeywordPageParameters,
+        ) -> Result<KeywordPage, DiscoveryError> {
             self.fail()?;
-            Ok(DiscoveryPage {
+            Ok(KeywordPage {
                 items: vec![KeywordRecord {
                     keyword: identity("Data_Formats"),
                     package_count: 3,
                 }],
-                next_cursor: None,
+                total: 42,
+                page: 2,
+                per_page: 15,
             })
         }
 
@@ -837,6 +913,80 @@ mod tests {
                     ]
                 }
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn keywords_return_page_counts_and_accept_a_sort() {
+        let response = test_router(None)
+            .oneshot(request("/v1/keywords?sort=name&page=2&per_page=15"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await,
+            json!({
+                "data": [{
+                    "keyword": "Data_Formats",
+                    "normalized_keyword": "data-formats",
+                    "package_count": 3
+                }],
+                "meta": {"total": 42, "page": 2, "per_page": 15}
+            })
+        );
+
+        // The deprecated page-size alias still resolves.
+        let alias = test_router(None)
+            .oneshot(request("/v1/keywords?limit=5"))
+            .await
+            .unwrap();
+        assert_eq!(alias.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn keyword_paging_errors_name_the_parameter_at_fault() {
+        // The cursor parameter is retired, so it is now simply unknown.
+        let retired = test_router(None)
+            .oneshot(request("/v1/keywords?cursor=opaque"))
+            .await
+            .unwrap();
+        assert_eq!(retired.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let sort = test_router(Some(DiscoveryErrorKind::InvalidSort))
+            .oneshot(request("/v1/keywords?sort=downloads"))
+            .await
+            .unwrap();
+        let problem = response_json(sort).await;
+        assert_eq!(problem["errors"][0]["code"], "invalid_sort");
+        assert_eq!(problem["errors"][0]["pointer"], "/sort");
+
+        let page = test_router(Some(DiscoveryErrorKind::InvalidPage))
+            .oneshot(request("/v1/keywords?page=0"))
+            .await
+            .unwrap();
+        assert_eq!(response_json(page).await["errors"][0]["pointer"], "/page");
+
+        let per_page = test_router(Some(DiscoveryErrorKind::InvalidLimit))
+            .oneshot(request("/v1/keywords?per_page=0"))
+            .await
+            .unwrap();
+        let problem = response_json(per_page).await;
+        assert_eq!(problem["errors"][0]["code"], "invalid_per_page");
+        assert_eq!(problem["errors"][0]["pointer"], "/per_page");
+
+        let alias = test_router(Some(DiscoveryErrorKind::InvalidLimit))
+            .oneshot(request("/v1/keywords?limit=0"))
+            .await
+            .unwrap();
+        assert_eq!(response_json(alias).await["errors"][0]["pointer"], "/limit");
+
+        let conflict = test_router(None)
+            .oneshot(request("/v1/keywords?limit=5&per_page=5"))
+            .await
+            .unwrap();
+        assert_eq!(
+            response_json(conflict).await["errors"][0]["code"],
+            "conflicting_page_size"
         );
     }
 

@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use time::{Duration, Time, UtcOffset};
 
 use crate::{
-    Clock, DependentPackageRecord, DiscoveryReader, KeywordBoundary, KeywordRecord,
+    Clock, DependentPackageRecord, DiscoveryReader, KeywordRecord, KeywordSortOrder,
     PackageDownloadStatisticsRecord, PackageHighlightsRecord, PackageIdentityBoundary,
     PackageVersionHistoryRecord, SitemapBoundary, SitemapEntryKind, SitemapEntryRecord,
 };
@@ -20,6 +20,11 @@ pub const MAX_DISCOVERY_LIMIT: u16 = 100;
 pub const DEFAULT_SITEMAP_LIMIT: u16 = 100;
 pub const MAX_SITEMAP_LIMIT: u16 = 1_000;
 pub const HIGHLIGHT_LIMIT: u16 = 10;
+
+/// The furthest keyword page a client may ask for, matching the search ceiling:
+/// a deep offset costs as much as every page before it.
+pub const MAX_DISCOVERY_PAGE: u32 = 10_000;
+
 pub const POPULARITY_WINDOW_DAYS: i64 = 30;
 pub const DOWNLOAD_STATISTICS_WINDOW_DAYS: i64 = 30;
 
@@ -38,12 +43,32 @@ pub struct DiscoveryPage<T> {
     pub next_cursor: Option<String>,
 }
 
+/// The keyword index is the one discovery collection read by page number rather
+/// than by cursor: it is small, bounded by the number of distinct keywords, and
+/// the UI offers a choice of ordering, which a keyset cursor cannot follow.
+#[derive(Clone, Debug, Default)]
+pub struct KeywordPageParameters {
+    pub sort: Option<String>,
+    pub page: Option<u32>,
+    pub per_page: Option<u16>,
+}
+
+#[derive(Clone, Debug)]
+pub struct KeywordPage {
+    pub items: Vec<KeywordRecord>,
+    pub total: u64,
+    pub page: u32,
+    pub per_page: u16,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DiscoveryErrorKind {
     InvalidNamespace,
     InvalidPackage,
     InvalidLimit,
     InvalidCursor,
+    InvalidSort,
+    InvalidPage,
     PackageNotFound,
     Unavailable,
 }
@@ -84,8 +109,8 @@ pub trait Discovery: Send + Sync {
 
     async fn keywords(
         &self,
-        parameters: DiscoveryPageParameters,
-    ) -> Result<DiscoveryPage<KeywordRecord>, DiscoveryError>;
+        parameters: KeywordPageParameters,
+    ) -> Result<KeywordPage, DiscoveryError>;
 
     async fn versions(
         &self,
@@ -174,40 +199,34 @@ impl Discovery for DiscoveryService {
 
     async fn keywords(
         &self,
-        parameters: DiscoveryPageParameters,
-    ) -> Result<DiscoveryPage<KeywordRecord>, DiscoveryError> {
-        let limit = page_limit(
-            parameters.limit,
+        parameters: KeywordPageParameters,
+    ) -> Result<KeywordPage, DiscoveryError> {
+        let sort = parameters
+            .sort
+            .as_deref()
+            .map(parse_keyword_sort)
+            .transpose()?
+            .unwrap_or_default();
+        let per_page = page_limit(
+            parameters.per_page,
             DEFAULT_DISCOVERY_LIMIT,
             MAX_DISCOVERY_LIMIT,
         )?;
-        let scope = scope_hash("keywords", &[]);
-        let boundary = parameters
-            .cursor
-            .as_deref()
-            .map(|value| decode_keyword_cursor(value, scope))
-            .transpose()?;
-        let mut items = self
+        let page = parameters.page.unwrap_or(1);
+        if !(1..=MAX_DISCOVERY_PAGE).contains(&page) {
+            return Err(DiscoveryError::new(DiscoveryErrorKind::InvalidPage));
+        }
+        let result = self
             .repository
-            .keywords(boundary.as_ref(), fetch_limit(limit))
+            .keywords(sort, page, per_page)
             .await
             .map_err(|_| unavailable())?;
-        let has_more = items.len() > usize::from(limit);
-        items.truncate(usize::from(limit));
-        let next_cursor = has_more.then(|| {
-            let item = items
-                .last()
-                .expect("a non-empty over-limit page has a boundary");
-            encode_cursor(
-                CursorKind::Keywords,
-                scope,
-                &[
-                    &item.package_count.to_be_bytes(),
-                    item.keyword.normalized().as_bytes(),
-                ],
-            )
-        });
-        Ok(DiscoveryPage { items, next_cursor })
+        Ok(KeywordPage {
+            items: result.items,
+            total: result.total,
+            page,
+            per_page,
+        })
     }
 
     async fn versions(
@@ -333,10 +352,12 @@ fn unavailable() -> DiscoveryError {
     DiscoveryError::new(DiscoveryErrorKind::Unavailable)
 }
 
+/// The discriminant is written into every cursor, so the values are part of the
+/// wire format. `2` is retired — it belonged to the keyword index before it
+/// moved to page numbers — and must not be reused for another collection.
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CursorKind {
     Dependents = 1,
-    Keywords = 2,
     Versions = 3,
     Sitemap = 4,
 }
@@ -397,16 +418,12 @@ fn decode_package_cursor(
     Ok(PackageIdentityBoundary { namespace, package })
 }
 
-fn decode_keyword_cursor(value: &str, scope: [u8; 32]) -> Result<KeywordBoundary, DiscoveryError> {
-    let mut decoder = decoder(value, CursorKind::Keywords, scope)?;
-    let count = decoder.field()?;
-    let package_count = u64::from_be_bytes(count.try_into().map_err(|_| invalid_cursor())?);
-    let keyword = decoder.normalized_identity()?;
-    decoder.finish()?;
-    Ok(KeywordBoundary {
-        package_count,
-        keyword,
-    })
+fn parse_keyword_sort(value: &str) -> Result<KeywordSortOrder, DiscoveryError> {
+    match value {
+        "packages" => Ok(KeywordSortOrder::Packages),
+        "name" => Ok(KeywordSortOrder::Name),
+        _ => Err(DiscoveryError::new(DiscoveryErrorKind::InvalidSort)),
+    }
 }
 
 fn decode_version_cursor(value: &str, scope: [u8; 32]) -> Result<SemanticVersion, DiscoveryError> {
@@ -548,7 +565,7 @@ mod tests {
     use time::OffsetDateTime;
 
     use super::*;
-    use crate::{PackageKind, RepositoryError};
+    use crate::{KeywordPageRecord, PackageKind, RepositoryError};
 
     struct FixedClock;
 
@@ -564,6 +581,7 @@ mod tests {
         version_items: Vec<PackageVersionHistoryRecord>,
         highlight_window: Mutex<Option<(OffsetDateTime, OffsetDateTime, u16)>>,
         download_window: Mutex<Option<(OffsetDateTime, OffsetDateTime)>>,
+        keyword_call: Mutex<Option<(KeywordSortOrder, u32, u16)>>,
     }
 
     #[async_trait]
@@ -580,10 +598,15 @@ mod tests {
 
         async fn keywords(
             &self,
-            _boundary: Option<&KeywordBoundary>,
-            _limit: u16,
-        ) -> Result<Vec<KeywordRecord>, RepositoryError> {
-            Ok(Vec::new())
+            sort: KeywordSortOrder,
+            page: u32,
+            per_page: u16,
+        ) -> Result<KeywordPageRecord, RepositoryError> {
+            *self.keyword_call.lock().unwrap() = Some((sort, page, per_page));
+            Ok(KeywordPageRecord {
+                items: Vec::new(),
+                total: 0,
+            })
         }
 
         async fn package_version_history(
@@ -707,6 +730,83 @@ mod tests {
             .await
             .unwrap();
         assert!(first.next_cursor.is_some());
+    }
+
+    #[tokio::test]
+    async fn keywords_page_by_number_and_default_to_the_busiest_first() {
+        let reader = Arc::new(StubReader::default());
+        let service = DiscoveryService::new(reader.clone(), Arc::new(FixedClock));
+
+        service
+            .keywords(KeywordPageParameters::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            reader.keyword_call.lock().unwrap().unwrap(),
+            (KeywordSortOrder::Packages, 1, DEFAULT_DISCOVERY_LIMIT)
+        );
+
+        let page = service
+            .keywords(KeywordPageParameters {
+                sort: Some("name".into()),
+                page: Some(4),
+                per_page: Some(15),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            reader.keyword_call.lock().unwrap().unwrap(),
+            (KeywordSortOrder::Name, 4, 15)
+        );
+        assert_eq!((page.page, page.per_page), (4, 15));
+    }
+
+    #[tokio::test]
+    async fn keyword_sort_and_page_validation_is_stable() {
+        let service = DiscoveryService::new(Arc::new(StubReader::default()), Arc::new(FixedClock));
+        let cases = [
+            (
+                KeywordPageParameters {
+                    sort: Some("downloads".into()),
+                    ..KeywordPageParameters::default()
+                },
+                DiscoveryErrorKind::InvalidSort,
+            ),
+            (
+                KeywordPageParameters {
+                    page: Some(0),
+                    ..KeywordPageParameters::default()
+                },
+                DiscoveryErrorKind::InvalidPage,
+            ),
+            (
+                KeywordPageParameters {
+                    page: Some(MAX_DISCOVERY_PAGE + 1),
+                    ..KeywordPageParameters::default()
+                },
+                DiscoveryErrorKind::InvalidPage,
+            ),
+            (
+                KeywordPageParameters {
+                    per_page: Some(0),
+                    ..KeywordPageParameters::default()
+                },
+                DiscoveryErrorKind::InvalidLimit,
+            ),
+            (
+                KeywordPageParameters {
+                    per_page: Some(MAX_DISCOVERY_LIMIT + 1),
+                    ..KeywordPageParameters::default()
+                },
+                DiscoveryErrorKind::InvalidLimit,
+            ),
+        ];
+        for (parameters, expected) in cases {
+            assert_eq!(
+                service.keywords(parameters).await.unwrap_err().kind(),
+                expected
+            );
+        }
     }
 
     #[tokio::test]

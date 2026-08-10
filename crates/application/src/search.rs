@@ -3,21 +3,21 @@ use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rux_domain::IdentitySegment;
-use sha2::{Digest, Sha256};
 
 use crate::{
-    PackageKind, PackageSearchBoundary, PackageSearchCriteria, PackageSearchReader,
-    PackageSearchRecord,
+    PackageKind, PackageSearchCriteria, PackageSearchReader, PackageSearchRecord, PackageSortOrder,
 };
 
-pub const DEFAULT_SEARCH_LIMIT: u16 = 20;
-pub const MAX_SEARCH_LIMIT: u16 = 100;
+pub const DEFAULT_SEARCH_PAGE_SIZE: u16 = 20;
+pub const MAX_SEARCH_PAGE_SIZE: u16 = 100;
 pub const MAX_SEARCH_QUERY_BYTES: usize = 256;
-const MAX_CURSOR_BYTES: usize = 512;
-const CURSOR_VERSION: u8 = 1;
+
+/// The furthest page a client may ask for.
+///
+/// Offset pagination makes a deep page as expensive as every page before it,
+/// so the ceiling keeps a crafted `?page=` from scanning the whole catalog.
+pub const MAX_SEARCH_PAGE: u32 = 10_000;
 
 #[derive(Clone, Debug, Default)]
 pub struct PackageSearchParameters {
@@ -25,14 +25,17 @@ pub struct PackageSearchParameters {
     pub namespace: Option<String>,
     pub keyword: Option<String>,
     pub package_type: Option<String>,
-    pub limit: Option<u16>,
-    pub cursor: Option<String>,
+    pub sort: Option<String>,
+    pub page: Option<u32>,
+    pub per_page: Option<u16>,
 }
 
 #[derive(Clone, Debug)]
 pub struct PackageSearchPage {
     pub items: Vec<PackageSearchRecord>,
-    pub next_cursor: Option<String>,
+    pub total: u64,
+    pub page: u32,
+    pub per_page: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,8 +44,9 @@ pub enum PackageSearchErrorKind {
     InvalidNamespace,
     InvalidKeyword,
     InvalidPackageType,
-    InvalidLimit,
-    InvalidCursor,
+    InvalidSort,
+    InvalidPage,
+    InvalidPerPage,
     Unavailable,
 }
 
@@ -97,34 +101,27 @@ impl PackageSearch for PackageSearchService {
         parameters: PackageSearchParameters,
     ) -> Result<PackageSearchPage, PackageSearchError> {
         let criteria = criteria(&parameters)?;
-        let limit = parameters.limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
-        if !(1..=MAX_SEARCH_LIMIT).contains(&limit) {
+        let per_page = parameters.per_page.unwrap_or(DEFAULT_SEARCH_PAGE_SIZE);
+        if !(1..=MAX_SEARCH_PAGE_SIZE).contains(&per_page) {
             return Err(PackageSearchError::new(
-                PackageSearchErrorKind::InvalidLimit,
+                PackageSearchErrorKind::InvalidPerPage,
             ));
         }
-        let criteria_hash = criteria_hash(&criteria);
-        let boundary = parameters
-            .cursor
-            .as_deref()
-            .map(|cursor| decode_cursor(cursor, criteria_hash))
-            .transpose()?;
-        let fetch_limit = limit
-            .checked_add(1)
-            .expect("the bounded search limit can be incremented");
-        let mut items = self
+        let page = parameters.page.unwrap_or(1);
+        if !(1..=MAX_SEARCH_PAGE).contains(&page) {
+            return Err(PackageSearchError::new(PackageSearchErrorKind::InvalidPage));
+        }
+        let result = self
             .repository
-            .search_packages(&criteria, boundary.as_ref(), fetch_limit)
+            .search_packages(&criteria, page, per_page)
             .await
             .map_err(|_| PackageSearchError::new(PackageSearchErrorKind::Unavailable))?;
-        let has_more = items.len() > usize::from(limit);
-        items.truncate(usize::from(limit));
-        let next_cursor = if has_more {
-            items.last().map(|item| encode_cursor(item, criteria_hash))
-        } else {
-            None
-        };
-        Ok(PackageSearchPage { items, next_cursor })
+        Ok(PackageSearchPage {
+            items: result.items,
+            total: result.total,
+            page,
+            per_page,
+        })
     }
 }
 
@@ -160,12 +157,25 @@ fn criteria(
         .as_deref()
         .map(parse_package_type)
         .transpose()?;
+    let sort = parameters
+        .sort
+        .as_deref()
+        .map(parse_sort)
+        .transpose()?
+        // Relevance scores are all zero without a query, so browsing defaults to
+        // the name order the scoring would otherwise degenerate into anyway.
+        .unwrap_or(if query.is_some() {
+            PackageSortOrder::Relevance
+        } else {
+            PackageSortOrder::Name
+        });
     Ok(PackageSearchCriteria {
         query,
         identity_query,
         namespace,
         keyword,
         package_type,
+        sort,
     })
 }
 
@@ -185,137 +195,15 @@ fn parse_package_type(value: &str) -> Result<PackageKind, PackageSearchError> {
     }
 }
 
-fn criteria_hash(criteria: &PackageSearchCriteria) -> [u8; 32] {
-    let mut digest = Sha256::new();
-    let query = criteria.query.as_ref().map(|query| query.to_lowercase());
-    hash_optional(&mut digest, query.as_deref());
-    hash_optional(
-        &mut digest,
-        criteria.namespace.as_ref().map(IdentitySegment::normalized),
-    );
-    hash_optional(
-        &mut digest,
-        criteria.keyword.as_ref().map(IdentitySegment::normalized),
-    );
-    digest.update([match criteria.package_type {
-        None => 0,
-        Some(PackageKind::Program) => 1,
-        Some(PackageKind::Library) => 2,
-        Some(PackageKind::Source) => 3,
-    }]);
-    digest.finalize().into()
-}
-
-fn hash_optional(digest: &mut Sha256, value: Option<&str>) {
+fn parse_sort(value: &str) -> Result<PackageSortOrder, PackageSearchError> {
     match value {
-        None => digest.update([0]),
-        Some(value) => {
-            digest.update([1]);
-            digest.update(
-                u64::try_from(value.len())
-                    .expect("search criteria length fits u64")
-                    .to_be_bytes(),
-            );
-            digest.update(value.as_bytes());
-        }
-    }
-}
-
-fn encode_cursor(item: &PackageSearchRecord, criteria_hash: [u8; 32]) -> String {
-    let namespace = item.namespace.normalized().as_bytes();
-    let package = item.package.normalized().as_bytes();
-    let mut bytes = Vec::with_capacity(52 + namespace.len() + package.len());
-    bytes.push(CURSOR_VERSION);
-    bytes.extend_from_slice(&criteria_hash);
-    bytes.push(item.match_class);
-    bytes.extend_from_slice(&item.relevance.to_be_bytes());
-    bytes.push(u8::try_from(namespace.len()).expect("identity length fits in a byte"));
-    bytes.extend_from_slice(namespace);
-    bytes.push(u8::try_from(package.len()).expect("identity length fits in a byte"));
-    bytes.extend_from_slice(package);
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
-fn decode_cursor(
-    value: &str,
-    expected_hash: [u8; 32],
-) -> Result<PackageSearchBoundary, PackageSearchError> {
-    if value.len() > MAX_CURSOR_BYTES {
-        return Err(invalid_cursor());
-    }
-    let bytes = URL_SAFE_NO_PAD
-        .decode(value)
-        .map_err(|_| invalid_cursor())?;
-    let mut decoder = CursorDecoder::new(&bytes);
-    if decoder.byte()? != CURSOR_VERSION || decoder.array::<32>()? != expected_hash {
-        return Err(invalid_cursor());
-    }
-    let match_class = decoder.byte()?;
-    let relevance = i64::from_be_bytes(decoder.array::<8>()?);
-    let namespace = decoder.identity()?;
-    let package = decoder.identity()?;
-    if !decoder.finished() || match_class > 5 || relevance < 0 {
-        return Err(invalid_cursor());
-    }
-    Ok(PackageSearchBoundary {
-        match_class,
-        relevance,
-        namespace,
-        package,
-    })
-}
-
-fn invalid_cursor() -> PackageSearchError {
-    PackageSearchError::new(PackageSearchErrorKind::InvalidCursor)
-}
-
-struct CursorDecoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> CursorDecoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn byte(&mut self) -> Result<u8, PackageSearchError> {
-        let value = *self.bytes.get(self.offset).ok_or_else(invalid_cursor)?;
-        self.offset += 1;
-        Ok(value)
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], PackageSearchError> {
-        let end = self.offset.checked_add(N).ok_or_else(invalid_cursor)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or_else(invalid_cursor)?
-            .try_into()
-            .expect("the slice length is checked");
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn identity(&mut self) -> Result<String, PackageSearchError> {
-        let length = usize::from(self.byte()?);
-        let end = self.offset.checked_add(length).ok_or_else(invalid_cursor)?;
-        let value = std::str::from_utf8(
-            self.bytes
-                .get(self.offset..end)
-                .ok_or_else(invalid_cursor)?,
-        )
-        .map_err(|_| invalid_cursor())?;
-        self.offset = end;
-        let identity = IdentitySegment::new(value).map_err(|_| invalid_cursor())?;
-        if identity.as_str() != identity.normalized() {
-            return Err(invalid_cursor());
-        }
-        Ok(value.to_owned())
-    }
-
-    const fn finished(&self) -> bool {
-        self.offset == self.bytes.len()
+        "relevance" => Ok(PackageSortOrder::Relevance),
+        "name" => Ok(PackageSortOrder::Name),
+        "downloads" => Ok(PackageSortOrder::Downloads),
+        "recent_downloads" => Ok(PackageSortOrder::RecentDownloads),
+        "updated" => Ok(PackageSortOrder::Updated),
+        "created" => Ok(PackageSortOrder::Created),
+        _ => Err(PackageSearchError::new(PackageSearchErrorKind::InvalidSort)),
     }
 }
 
@@ -327,11 +215,12 @@ mod tests {
     use time::OffsetDateTime;
 
     use super::*;
-    use crate::{RepositoryError, RepositoryErrorKind};
+    use crate::{PackageSearchPageRecord, RepositoryError, RepositoryErrorKind};
 
     struct StubReader {
         records: Vec<PackageSearchRecord>,
-        calls: Mutex<Vec<(PackageSearchCriteria, Option<PackageSearchBoundary>, u16)>>,
+        total: u64,
+        calls: Mutex<Vec<(PackageSearchCriteria, u32, u16)>>,
         unavailable: bool,
     }
 
@@ -340,17 +229,20 @@ mod tests {
         async fn search_packages(
             &self,
             criteria: &PackageSearchCriteria,
-            boundary: Option<&PackageSearchBoundary>,
-            limit: u16,
-        ) -> Result<Vec<PackageSearchRecord>, RepositoryError> {
+            page: u32,
+            per_page: u16,
+        ) -> Result<PackageSearchPageRecord, RepositoryError> {
             self.calls
                 .lock()
                 .unwrap()
-                .push((criteria.clone(), boundary.cloned(), limit));
+                .push((criteria.clone(), page, per_page));
             if self.unavailable {
                 return Err(RepositoryError::new(RepositoryErrorKind::Unavailable));
             }
-            Ok(self.records.clone())
+            Ok(PackageSearchPageRecord {
+                items: self.records.clone(),
+                total: self.total,
+            })
         }
     }
 
@@ -364,8 +256,9 @@ mod tests {
                 namespace: Some("Rux_Tools".into()),
                 keyword: Some("Data_Formats".into()),
                 package_type: Some("library".into()),
-                limit: Some(25),
-                cursor: None,
+                sort: Some("downloads".into()),
+                page: Some(3),
+                per_page: Some(25),
             })
             .await
             .unwrap();
@@ -381,7 +274,59 @@ mod tests {
             "data-formats"
         );
         assert_eq!(calls[0].0.package_type, Some(PackageKind::Library));
-        assert_eq!(calls[0].2, 26);
+        assert_eq!(calls[0].0.sort, PackageSortOrder::Downloads);
+        assert_eq!(calls[0].1, 3);
+        assert_eq!(calls[0].2, 25);
+    }
+
+    #[tokio::test]
+    async fn sort_defaults_to_relevance_with_a_query_and_name_without_one() {
+        let reader = Arc::new(stub(Vec::new()));
+        let service = PackageSearchService::new(reader.clone());
+        service
+            .search(PackageSearchParameters {
+                query: Some("json".into()),
+                ..PackageSearchParameters::default()
+            })
+            .await
+            .unwrap();
+        service
+            .search(PackageSearchParameters::default())
+            .await
+            .unwrap();
+        // A whitespace-only query is discarded by canonicalization, so it browses
+        // and must pick the browse default rather than a relevance ordering.
+        service
+            .search(PackageSearchParameters {
+                query: Some("   ".into()),
+                ..PackageSearchParameters::default()
+            })
+            .await
+            .unwrap();
+        let calls = reader.calls.lock().unwrap();
+        assert_eq!(calls[0].0.sort, PackageSortOrder::Relevance);
+        assert_eq!(calls[1].0.sort, PackageSortOrder::Name);
+        assert_eq!(calls[2].0.sort, PackageSortOrder::Name);
+    }
+
+    #[tokio::test]
+    async fn page_defaults_to_one_and_the_page_is_echoed_with_the_total() {
+        let reader = Arc::new(StubReader {
+            total: 137,
+            ..stub(vec![record("Alpha"), record("Beta")])
+        });
+        let service = PackageSearchService::new(reader.clone());
+        let page = service
+            .search(PackageSearchParameters {
+                per_page: Some(15),
+                ..PackageSearchParameters::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.total, 137);
+        assert_eq!(page.page, 1);
+        assert_eq!(page.per_page, 15);
+        assert_eq!(reader.calls.lock().unwrap()[0].1, 1);
     }
 
     #[tokio::test]
@@ -434,10 +379,38 @@ mod tests {
             ),
             (
                 PackageSearchParameters {
-                    limit: Some(0),
+                    sort: Some("stars".into()),
                     ..PackageSearchParameters::default()
                 },
-                PackageSearchErrorKind::InvalidLimit,
+                PackageSearchErrorKind::InvalidSort,
+            ),
+            (
+                PackageSearchParameters {
+                    per_page: Some(0),
+                    ..PackageSearchParameters::default()
+                },
+                PackageSearchErrorKind::InvalidPerPage,
+            ),
+            (
+                PackageSearchParameters {
+                    per_page: Some(MAX_SEARCH_PAGE_SIZE + 1),
+                    ..PackageSearchParameters::default()
+                },
+                PackageSearchErrorKind::InvalidPerPage,
+            ),
+            (
+                PackageSearchParameters {
+                    page: Some(0),
+                    ..PackageSearchParameters::default()
+                },
+                PackageSearchErrorKind::InvalidPage,
+            ),
+            (
+                PackageSearchParameters {
+                    page: Some(MAX_SEARCH_PAGE + 1),
+                    ..PackageSearchParameters::default()
+                },
+                PackageSearchErrorKind::InvalidPage,
             ),
         ];
         for (parameters, expected) in cases {
@@ -449,59 +422,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cursor_round_trips_and_is_bound_to_criteria() {
-        let reader = Arc::new(stub(vec![record("Alpha", 5), record("Beta", 4)]));
-        let service = PackageSearchService::new(reader.clone());
-        let first = service
-            .search(PackageSearchParameters {
-                query: Some("json".into()),
-                limit: Some(1),
-                ..PackageSearchParameters::default()
-            })
-            .await
-            .unwrap();
-        let cursor = first.next_cursor.expect("another page should be present");
-        service
-            .search(PackageSearchParameters {
-                query: Some("json".into()),
-                limit: Some(20),
-                cursor: Some(cursor.clone()),
-                ..PackageSearchParameters::default()
-            })
-            .await
-            .unwrap();
-        {
-            let calls = reader.calls.lock().unwrap();
-            assert_eq!(calls[1].1.as_ref().unwrap().package, "alpha");
-        }
-        assert_eq!(
-            service
-                .search(PackageSearchParameters {
-                    query: Some("http".into()),
-                    cursor: Some(cursor),
-                    ..PackageSearchParameters::default()
-                })
-                .await
-                .unwrap_err()
-                .kind(),
-            PackageSearchErrorKind::InvalidCursor
-        );
-    }
-
-    #[tokio::test]
-    async fn malformed_cursor_and_repository_failure_are_mapped() {
-        let service = PackageSearchService::new(Arc::new(stub(Vec::new())));
-        assert_eq!(
-            service
-                .search(PackageSearchParameters {
-                    cursor: Some("not-base64!".into()),
-                    ..PackageSearchParameters::default()
-                })
-                .await
-                .unwrap_err()
-                .kind(),
-            PackageSearchErrorKind::InvalidCursor
-        );
+    async fn repository_failure_is_mapped_to_unavailable() {
         let unavailable = PackageSearchService::new(Arc::new(StubReader {
             unavailable: true,
             ..stub(Vec::new())
@@ -517,14 +438,16 @@ mod tests {
     }
 
     fn stub(records: Vec<PackageSearchRecord>) -> StubReader {
+        let total = records.len() as u64;
         StubReader {
             records,
+            total,
             calls: Mutex::new(Vec::new()),
             unavailable: false,
         }
     }
 
-    fn record(package: &str, match_class: u8) -> PackageSearchRecord {
+    fn record(package: &str) -> PackageSearchRecord {
         PackageSearchRecord {
             namespace: IdentitySegment::new("Rux").unwrap(),
             package: IdentitySegment::new(package).unwrap(),
@@ -533,8 +456,8 @@ mod tests {
             description: None,
             published_at: OffsetDateTime::UNIX_EPOCH,
             yanked: false,
-            match_class,
-            relevance: 10,
+            downloads_total: 0,
+            downloads_30d: 0,
         }
     }
 }

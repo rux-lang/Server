@@ -8,13 +8,14 @@ use rux_application::{
     DashboardUser, DependencyRecord, DependentPackageRecord, DiscoveryReader, DownloadReader,
     DownloadTargetRecord, DownloadTransaction, DownloadUnitOfWork, DownloadWriter,
     GitHubUserProfile, HighlightPackageRecord, InvitationId, InvitationRecord,
-    InvitationResolution, KeywordBoundary, KeywordRecord, NamespaceId, NamespaceInvitationRecord,
-    NamespaceMemberRecord, NamespaceMembershipRecord, NamespaceOwnerRecord, NamespaceReader,
-    NamespaceRecord, NamespaceRole, NamespaceWriter, NewApiToken, NewInvitation, NewPackageVersion,
-    NewSession, PackageDownloadDayRecord, PackageDownloadStatisticsRecord, PackageHighlightsRecord,
-    PackageId, PackageIdentityBoundary, PackageKind, PackageMetadataReader, PackageRecord,
-    PackageSearchBoundary, PackageSearchCriteria, PackageSearchReader, PackageSearchRecord,
-    PackageSummaryRecord, PackageVersionHistoryRecord, PackageVersionId,
+    InvitationResolution, KeywordPageRecord, KeywordRecord, KeywordSortOrder, NamespaceId,
+    NamespaceInvitationRecord, NamespaceMemberRecord, NamespaceMembershipRecord,
+    NamespaceOwnerRecord, NamespaceReader, NamespaceRecord, NamespaceRole, NamespaceWriter,
+    NewApiToken, NewInvitation, NewPackageVersion, NewSession, POPULARITY_WINDOW_DAYS,
+    PackageDownloadDayRecord, PackageDownloadStatisticsRecord, PackageHighlightsRecord, PackageId,
+    PackageIdentityBoundary, PackageKind, PackageMetadataReader, PackageRecord,
+    PackageSearchCriteria, PackageSearchPageRecord, PackageSearchReader, PackageSearchRecord,
+    PackageSortOrder, PackageSummaryRecord, PackageVersionHistoryRecord, PackageVersionId,
     PackageVersionMetadataRecord, PackageVersionRecord, RegistryTransaction, RepositoryConflict,
     RepositoryError, RepositoryErrorKind, ResolverIndexReader, ResolverIndexRecord,
     ResolverVersionRecord, SecretHash, SessionId, SessionRecord, SitemapBoundary, SitemapEntryKind,
@@ -25,7 +26,7 @@ use rux_domain::{IdentitySegment, SemanticVersion, VersionRange};
 use serde_json::Value;
 use sqlx::{FromRow, PgPool, Postgres, Row, Transaction, query, query_as, query_scalar};
 use thiserror::Error;
-use time::{Date, OffsetDateTime};
+use time::{Date, Duration, OffsetDateTime};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -321,8 +322,9 @@ struct PackageSearchRow {
     description: Option<String>,
     published_at: OffsetDateTime,
     yanked: bool,
-    match_class: i32,
-    relevance: i64,
+    downloads_total: i64,
+    downloads_30d: i64,
+    total_count: i64,
 }
 
 #[derive(FromRow)]
@@ -345,6 +347,7 @@ struct DependentPackageRow {
 struct KeywordDiscoveryRow {
     keyword_display_name: String,
     package_count: i64,
+    total_count: i64,
 }
 
 #[derive(FromRow)]
@@ -454,11 +457,19 @@ const ACTIVE_REPRESENTATIVE_CTE: &str = "active_representative AS (
         LIMIT 1
     ) v
 )";
+/// Everything in the catalog statement except the `ORDER BY`, which
+/// [`package_sort_clause`] appends from a fixed set so the caller's sort name
+/// never reaches the SQL text.
+///
+/// `$7` is the start of the 30-day download window, `$8` the row limit and `$9`
+/// the offset.
 const PACKAGE_SEARCH_SQL: &str = "WITH representative AS (
      SELECT n.display_name AS namespace_display_name,
             n.normalized_name AS namespace_normalized_name,
             p.display_name AS package_display_name,
             p.normalized_name AS package_normalized_name,
+            p.id AS package_id,
+            p.created_at AS package_created_at,
             v.id AS package_version_id,
             v.version,
             v.package_type,
@@ -534,6 +545,30 @@ const PACKAGE_SEARCH_SQL: &str = "WITH representative AS (
               AND match_keyword.normalized_name LIKE $3 ESCAPE '\\'
         )
         OR search_vector @@ plainto_tsquery('simple', $1)
+ ), download_counts AS (
+     SELECT v.package_id,
+            count(*)::BIGINT AS downloads_total,
+            count(*) FILTER (WHERE event.occurred_at >= $7)::BIGINT AS downloads_30d
+     FROM download_events event
+     JOIN package_versions v ON v.id = event.package_version_id
+     GROUP BY v.package_id
+ ), counted AS (
+     SELECT s.namespace_display_name,
+            s.namespace_normalized_name,
+            s.package_display_name,
+            s.package_normalized_name,
+            s.package_created_at,
+            s.version,
+            s.package_type,
+            s.description,
+            s.published_at,
+            s.yanked,
+            s.match_class,
+            s.relevance,
+            COALESCE(counts.downloads_total, 0) AS downloads_total,
+            COALESCE(counts.downloads_30d, 0) AS downloads_30d
+     FROM scored s
+     LEFT JOIN download_counts counts ON counts.package_id = s.package_id
  )
  SELECT namespace_display_name,
         package_display_name,
@@ -542,21 +577,10 @@ const PACKAGE_SEARCH_SQL: &str = "WITH representative AS (
         description,
         published_at,
         yanked,
-        match_class,
-        relevance
- FROM scored
- WHERE $7::INTEGER IS NULL
-    OR match_class < $7
-    OR (match_class = $7 AND relevance < $8)
-    OR (
-        match_class = $7 AND relevance = $8
-        AND (namespace_normalized_name, package_normalized_name) > ($9, $10)
-    )
- ORDER BY match_class DESC,
-          relevance DESC,
-          namespace_normalized_name,
-          package_normalized_name
- LIMIT $11";
+        downloads_total,
+        downloads_30d,
+        count(*) OVER () AS total_count
+ FROM counted";
 
 fn data_error(message: impl Into<String>) -> RepositoryError {
     RepositoryError::with_source(
@@ -1483,34 +1507,84 @@ impl PackageSearchReader for PostgresRepository {
     async fn search_packages(
         &self,
         criteria: &PackageSearchCriteria,
-        boundary: Option<&PackageSearchBoundary>,
-        limit: u16,
-    ) -> Result<Vec<PackageSearchRecord>, RepositoryError> {
+        page: u32,
+        per_page: u16,
+    ) -> Result<PackageSearchPageRecord, RepositoryError> {
         let namespace = criteria.namespace.as_ref().map(IdentitySegment::normalized);
         let keyword = criteria.keyword.as_ref().map(IdentitySegment::normalized);
         let package_type = criteria.package_type.map(package_kind_name);
         let pattern = criteria.identity_query.as_deref().map(literal_pattern);
-        let boundary_class = boundary.map(|boundary| i32::from(boundary.match_class));
-        let boundary_relevance = boundary.map(|boundary| boundary.relevance);
-        let boundary_namespace = boundary.map(|boundary| boundary.namespace.as_str());
-        let boundary_package = boundary.map(|boundary| boundary.package.as_str());
-        let rows = query_as::<_, PackageSearchRow>(PACKAGE_SEARCH_SQL)
+        // The same window the "popular" highlights use, so a package's
+        // "recent downloads" figure means one thing across the whole site.
+        let recent_since = OffsetDateTime::now_utc() - Duration::days(POPULARITY_WINDOW_DAYS);
+        let offset = i64::from(page - 1) * i64::from(per_page);
+        let sql = format!(
+            "{PACKAGE_SEARCH_SQL}{} LIMIT $8 OFFSET $9",
+            package_sort_clause(criteria.sort)
+        );
+        let rows = query_as::<_, PackageSearchRow>(&sql)
             .bind(criteria.query.as_deref())
             .bind(criteria.identity_query.as_deref())
             .bind(pattern.as_deref())
             .bind(namespace)
             .bind(keyword)
             .bind(package_type)
-            .bind(boundary_class)
-            .bind(boundary_relevance)
-            .bind(boundary_namespace)
-            .bind(boundary_package)
-            .bind(i64::from(limit))
+            .bind(recent_since)
+            .bind(i64::from(per_page))
+            .bind(offset)
             .fetch_all(&self.pool)
             .await
             .map_err(map_sqlx)?;
 
-        rows.into_iter().map(package_search_record).collect()
+        // `count(*) OVER ()` rides along on every row, so an empty page — the
+        // last one, or a page past the end — carries no total of its own. Zero
+        // is right for the first case and the only honest answer for the second.
+        let total = rows
+            .first()
+            .map_or(0, |row| u64::try_from(row.total_count).unwrap_or(0));
+        let items = rows
+            .into_iter()
+            .map(package_search_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(PackageSearchPageRecord { items, total })
+    }
+}
+
+/// The `ORDER BY` for a keyword ordering, as a constant.
+///
+/// Both variants end with `normalized_name`, which is unique per row after the
+/// `GROUP BY` — so the ordering is total and a keyword cannot straddle a page
+/// boundary.
+const fn keyword_sort_clause(sort: KeywordSortOrder) -> &'static str {
+    match sort {
+        KeywordSortOrder::Packages => " ORDER BY package_count DESC, normalized_name",
+        KeywordSortOrder::Name => " ORDER BY normalized_name",
+    }
+}
+
+/// The `ORDER BY` for a sort order, as a constant.
+///
+/// Every variant ends with the normalized-name tiebreak so the ordering is
+/// total; without it two packages with equal download counts could swap places
+/// between requests and appear twice, or not at all, across pages.
+const fn package_sort_clause(sort: PackageSortOrder) -> &'static str {
+    match sort {
+        PackageSortOrder::Relevance => {
+            " ORDER BY match_class DESC, relevance DESC, namespace_normalized_name, package_normalized_name"
+        }
+        PackageSortOrder::Name => " ORDER BY namespace_normalized_name, package_normalized_name",
+        PackageSortOrder::Downloads => {
+            " ORDER BY downloads_total DESC, namespace_normalized_name, package_normalized_name"
+        }
+        PackageSortOrder::RecentDownloads => {
+            " ORDER BY downloads_30d DESC, namespace_normalized_name, package_normalized_name"
+        }
+        PackageSortOrder::Updated => {
+            " ORDER BY published_at DESC, namespace_normalized_name, package_normalized_name"
+        }
+        PackageSortOrder::Created => {
+            " ORDER BY package_created_at DESC, namespace_normalized_name, package_normalized_name"
+        }
     }
 }
 
@@ -1851,9 +1925,10 @@ impl DiscoveryReader for PostgresRepository {
 
     async fn keywords(
         &self,
-        boundary: Option<&KeywordBoundary>,
-        limit: u16,
-    ) -> Result<Vec<KeywordRecord>, RepositoryError> {
+        sort: KeywordSortOrder,
+        page: u32,
+        per_page: u16,
+    ) -> Result<KeywordPageRecord, RepositoryError> {
         let sql = format!(
             "WITH {REPRESENTATIVE_CTE}, keyword_counts AS (
                  SELECT k.normalized_name,
@@ -1869,26 +1944,29 @@ impl DiscoveryReader for PostgresRepository {
                    ON k.package_version_id = r.package_version_id
                  GROUP BY k.normalized_name
              )
-             SELECT keyword_display_name, package_count
-             FROM keyword_counts
-             WHERE $1::BIGINT IS NULL
-                OR package_count < $1
-                OR (package_count = $1 AND normalized_name > $2)
-             ORDER BY package_count DESC, normalized_name
-             LIMIT $3"
+             SELECT keyword_display_name,
+                    package_count,
+                    count(*) OVER () AS total_count
+             FROM keyword_counts{} LIMIT $1 OFFSET $2",
+            keyword_sort_clause(sort)
         );
-        let boundary_count = boundary
-            .map(|value| i64::try_from(value.package_count))
-            .transpose()
-            .map_err(|_| data_error("keyword package count exceeds PostgreSQL BIGINT"))?;
+        let offset = i64::from(page - 1) * i64::from(per_page);
         let rows = query_as::<_, KeywordDiscoveryRow>(&sql)
-            .bind(boundary_count)
-            .bind(boundary.map(|value| value.keyword.as_str()))
-            .bind(i64::from(limit))
+            .bind(i64::from(per_page))
+            .bind(offset)
             .fetch_all(&self.pool)
             .await
             .map_err(map_sqlx)?;
-        rows.into_iter().map(keyword_record).collect()
+        // As in the catalog: the window count rides on the rows, so a page past
+        // the end reports zero because there is nothing to carry it.
+        let total = rows
+            .first()
+            .map_or(0, |row| u64::try_from(row.total_count).unwrap_or(0));
+        let items = rows
+            .into_iter()
+            .map(keyword_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(KeywordPageRecord { items, total })
     }
 
     async fn package_version_history(
@@ -2351,12 +2429,8 @@ fn literal_pattern(value: &str) -> String {
 }
 
 fn package_search_record(row: PackageSearchRow) -> Result<PackageSearchRecord, RepositoryError> {
-    let match_class = u8::try_from(row.match_class)
-        .ok()
-        .filter(|value| *value <= 5)
-        .ok_or_else(|| data_error("search match class is outside its valid range"))?;
-    if row.relevance < 0 {
-        return Err(data_error("search relevance is negative"));
+    if row.downloads_total < 0 || row.downloads_30d < 0 {
+        return Err(data_error("search download count is negative"));
     }
     Ok(PackageSearchRecord {
         namespace: stored_identity(row.namespace_display_name)?,
@@ -2368,8 +2442,8 @@ fn package_search_record(row: PackageSearchRow) -> Result<PackageSearchRecord, R
         description: row.description,
         published_at: row.published_at,
         yanked: row.yanked,
-        match_class,
-        relevance: row.relevance,
+        downloads_total: row.downloads_total,
+        downloads_30d: row.downloads_30d,
     })
 }
 

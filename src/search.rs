@@ -39,9 +39,16 @@ pub(crate) struct SearchQuery {
     namespace: Option<String>,
     keyword: Option<String>,
     package_type: Option<String>,
+    /// `relevance`, `name`, `downloads`, `recent_downloads`, `updated`, or
+    /// `created`. Defaults to `relevance` when `q` is present, `name` otherwise.
+    sort: Option<String>,
+    #[param(minimum = 1, maximum = 10000, default = 1)]
+    page: Option<u32>,
     #[param(minimum = 1, maximum = 100, default = 20)]
+    per_page: Option<u16>,
+    /// Deprecated alias for `per_page`. Supplying both is a validation error.
+    #[param(minimum = 1, maximum = 100)]
     limit: Option<u16>,
-    cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -55,6 +62,8 @@ pub(crate) struct PackageSearchDocument {
     #[schema(format = "date-time")]
     published_at: String,
     yanked: bool,
+    downloads_total: i64,
+    downloads_30d: i64,
     package_url: String,
     version_url: String,
 }
@@ -62,7 +71,9 @@ pub(crate) struct PackageSearchDocument {
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub(crate) struct SearchPageMeta {
-    next_cursor: Option<String>,
+    total: u64,
+    page: u32,
+    per_page: u16,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -89,23 +100,36 @@ pub(crate) async fn search_packages(
     let Ok(Query(query)) = query else {
         return malformed_query_problem().into_response();
     };
+    if query.per_page.is_some() && query.limit.is_some() {
+        return conflicting_page_size_problem().into_response();
+    }
+    // Which spelling the client used decides where an out-of-range page size is
+    // pointed, so the error names a parameter the request actually contains.
+    let page_size_pointer = if query.limit.is_some() {
+        "/limit"
+    } else {
+        "/per_page"
+    };
     let parameters = PackageSearchParameters {
         query: query.q,
         namespace: query.namespace,
         keyword: query.keyword,
         package_type: query.package_type,
-        limit: query.limit,
-        cursor: query.cursor,
+        sort: query.sort,
+        page: query.page,
+        per_page: query.per_page.or(query.limit),
     };
     match state.search.search(parameters).await {
         Ok(page) => Json(PackageSearchResponse {
             data: page.items.iter().map(search_document).collect(),
             meta: SearchPageMeta {
-                next_cursor: page.next_cursor,
+                total: page.total,
+                page: page.page,
+                per_page: page.per_page,
             },
         })
         .into_response(),
-        Err(error) => search_problem(error.kind()).into_response(),
+        Err(error) => search_problem(error.kind(), page_size_pointer).into_response(),
     }
 }
 
@@ -118,6 +142,8 @@ fn search_document(record: &PackageSearchRecord) -> PackageSearchDocument {
         description: record.description.clone(),
         published_at: timestamp(record.published_at),
         yanked: record.yanked,
+        downloads_total: record.downloads_total,
+        downloads_30d: record.downloads_30d,
         package_url: canonical_package_path(
             record.namespace.normalized(),
             record.package.normalized(),
@@ -152,7 +178,15 @@ fn malformed_query_problem() -> Problem {
     )
 }
 
-fn search_problem(kind: PackageSearchErrorKind) -> Problem {
+fn conflicting_page_size_problem() -> Problem {
+    invalid_parameter(
+        "conflicting_page_size",
+        "limit is a deprecated alias for per_page; supply only one of them",
+        Some("/per_page"),
+    )
+}
+
+fn search_problem(kind: PackageSearchErrorKind, page_size_pointer: &str) -> Problem {
     match kind {
         PackageSearchErrorKind::InvalidQuery => invalid_parameter(
             "invalid_search_query",
@@ -174,15 +208,20 @@ fn search_problem(kind: PackageSearchErrorKind) -> Problem {
             "must be program, library, or source",
             Some("/package_type"),
         ),
-        PackageSearchErrorKind::InvalidLimit => invalid_parameter(
-            "invalid_limit",
-            "must be an integer from 1 through 100",
-            Some("/limit"),
+        PackageSearchErrorKind::InvalidSort => invalid_parameter(
+            "invalid_sort",
+            "must be relevance, name, downloads, recent_downloads, updated, or created",
+            Some("/sort"),
         ),
-        PackageSearchErrorKind::InvalidCursor => invalid_parameter(
-            "invalid_cursor",
-            "must be an opaque cursor issued for the same search criteria",
-            Some("/cursor"),
+        PackageSearchErrorKind::InvalidPage => invalid_parameter(
+            "invalid_page",
+            "must be an integer from 1 through 10000",
+            Some("/page"),
+        ),
+        PackageSearchErrorKind::InvalidPerPage => invalid_parameter(
+            "invalid_per_page",
+            "must be an integer from 1 through 100",
+            Some(page_size_pointer),
         ),
         PackageSearchErrorKind::Unavailable => Problem::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -234,15 +273,17 @@ mod tests {
             }
             Ok(PackageSearchPage {
                 items: vec![fixture()],
-                next_cursor: Some("opaque-next".into()),
+                total: 137,
+                page: 2,
+                per_page: 15,
             })
         }
     }
 
     #[tokio::test]
-    async fn search_returns_representative_metadata_and_cursor() {
+    async fn search_returns_representative_metadata_and_page_counts() {
         let response = test_router(None)
-            .oneshot(request("/v1/search?q=json&limit=1"))
+            .oneshot(request("/v1/search?q=json&page=2&per_page=15"))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -257,12 +298,26 @@ mod tests {
                     "description": "Literal JSON parsing",
                     "published_at": "2026-08-02T12:00:00Z",
                     "yanked": false,
+                    "downloads_total": 4_820,
+                    "downloads_30d": 310,
                     "package_url": "/v1/packages/rux-tools/json-parser",
                     "version_url": "/v1/packages/rux-tools/json-parser/1.2.0"
                 }],
-                "meta": {"next_cursor": "opaque-next"}
+                "meta": {"total": 137, "page": 2, "per_page": 15}
             })
         );
+    }
+
+    #[tokio::test]
+    async fn sort_and_the_deprecated_limit_alias_are_accepted() {
+        for uri in [
+            "/v1/search?sort=downloads",
+            "/v1/search?sort=recent_downloads",
+            "/v1/search?limit=1",
+        ] {
+            let response = test_router(None).oneshot(request(uri)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        }
     }
 
     #[tokio::test]
@@ -277,15 +332,28 @@ mod tests {
             "invalid_query_parameters"
         );
 
-        let invalid = test_router(Some(PackageSearchErrorKind::InvalidCursor))
+        // The cursor parameter is gone, so it is now simply unknown.
+        let retired = test_router(None)
             .oneshot(request("/v1/search?cursor=bad"))
+            .await
+            .unwrap();
+        assert_eq!(retired.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let invalid = test_router(Some(PackageSearchErrorKind::InvalidSort))
+            .oneshot(request("/v1/search?sort=stars"))
             .await
             .unwrap();
         assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let problem = response_json(invalid).await;
         assert_eq!(problem["code"], "invalid_request");
-        assert_eq!(problem["errors"][0]["code"], "invalid_cursor");
-        assert_eq!(problem["errors"][0]["pointer"], "/cursor");
+        assert_eq!(problem["errors"][0]["code"], "invalid_sort");
+        assert_eq!(problem["errors"][0]["pointer"], "/sort");
+
+        let page = test_router(Some(PackageSearchErrorKind::InvalidPage))
+            .oneshot(request("/v1/search?page=0"))
+            .await
+            .unwrap();
+        assert_eq!(response_json(page).await["errors"][0]["pointer"], "/page");
 
         let unavailable = test_router(Some(PackageSearchErrorKind::Unavailable))
             .oneshot(request("/v1/search"))
@@ -295,6 +363,37 @@ mod tests {
         assert_eq!(
             response_json(unavailable).await["code"],
             "search_unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn page_size_errors_point_at_the_parameter_the_client_sent() {
+        let per_page = test_router(Some(PackageSearchErrorKind::InvalidPerPage))
+            .oneshot(request("/v1/search?per_page=0"))
+            .await
+            .unwrap();
+        assert_eq!(
+            response_json(per_page).await["errors"][0]["pointer"],
+            "/per_page"
+        );
+
+        let limit = test_router(Some(PackageSearchErrorKind::InvalidPerPage))
+            .oneshot(request("/v1/search?limit=0"))
+            .await
+            .unwrap();
+        assert_eq!(response_json(limit).await["errors"][0]["pointer"], "/limit");
+    }
+
+    #[tokio::test]
+    async fn supplying_both_page_size_parameters_is_rejected() {
+        let response = test_router(None)
+            .oneshot(request("/v1/search?limit=5&per_page=5"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            response_json(response).await["errors"][0]["code"],
+            "conflicting_page_size"
         );
     }
 
@@ -319,8 +418,8 @@ mod tests {
             description: Some("Literal JSON parsing".into()),
             published_at: datetime!(2026-08-02 12:00 UTC),
             yanked: false,
-            match_class: 4,
-            relevance: 1_000_000,
+            downloads_total: 4_820,
+            downloads_30d: 310,
         }
     }
 }

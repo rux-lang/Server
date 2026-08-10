@@ -1,7 +1,7 @@
 use std::error::Error;
 use uuid::Uuid;
 
-use rux_application::{DiscoveryReader, SitemapEntryKind};
+use rux_application::{DiscoveryReader, KeywordSortOrder, SitemapEntryKind};
 use rux_domain::{IdentitySegment, SemanticVersion};
 use rux_infrastructure::PostgresRepository;
 use sqlx::{PgPool, query, query_scalar};
@@ -44,7 +44,10 @@ async fn dependents_keywords_and_sitemap_use_representative_versions(pool: PgPoo
     assert_eq!(dependents[0].requirements[0].alias.as_str(), "Io");
     assert!(dependents[1].yanked);
 
-    let keywords = repository.keywords(None, 10).await?;
+    let keywords = repository
+        .keywords(KeywordSortOrder::Packages, 1, 10)
+        .await?
+        .items;
     assert_eq!(keywords[0].keyword.normalized(), "web");
     assert_eq!(keywords[0].package_count, 2);
     assert!(
@@ -76,6 +79,61 @@ async fn dependents_keywords_and_sitemap_use_representative_versions(pool: PgPoo
                 .is_some_and(|value| value.normalized() == "legacy")
     }));
     Ok(())
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn keywords_sort_by_count_or_name_and_page_by_number(pool: PgPool) -> TestResult {
+    let repository = PostgresRepository::new(pool.clone());
+    // "zeta" is on every package, "alpha" on one — so the two orderings are
+    // exact opposites and neither can pass by accident.
+    for (index, package) in ["One", "Two", "Three"].iter().enumerate() {
+        let id = create_package(&pool, "Rux", package).await?;
+        let version = insert_version(&pool, id, "1.0.0", "2026-01-01T00:00:00Z", false).await?;
+        add_keyword(&pool, version, "Zeta").await?;
+        if index == 0 {
+            add_keyword(&pool, version, "Alpha").await?;
+            add_keyword(&pool, version, "Middle").await?;
+        }
+    }
+
+    let by_count = keyword_names(&repository, KeywordSortOrder::Packages, 1, 10).await?;
+    assert_eq!(by_count, ["zeta", "alpha", "middle"]);
+    let by_name = keyword_names(&repository, KeywordSortOrder::Name, 1, 10).await?;
+    assert_eq!(by_name, ["alpha", "middle", "zeta"]);
+
+    let first = repository.keywords(KeywordSortOrder::Name, 1, 2).await?;
+    assert_eq!(first.total, 3);
+    let second = repository.keywords(KeywordSortOrder::Name, 2, 2).await?;
+    assert_eq!(second.total, 3);
+    assert_eq!(
+        first
+            .items
+            .iter()
+            .chain(&second.items)
+            .map(|item| item.keyword.normalized().to_owned())
+            .collect::<Vec<_>>(),
+        ["alpha", "middle", "zeta"]
+    );
+
+    let past_end = repository.keywords(KeywordSortOrder::Name, 9, 2).await?;
+    assert!(past_end.items.is_empty());
+    assert_eq!(past_end.total, 0);
+    Ok(())
+}
+
+async fn keyword_names(
+    repository: &PostgresRepository,
+    sort: KeywordSortOrder,
+    page: u32,
+    per_page: u16,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    Ok(repository
+        .keywords(sort, page, per_page)
+        .await?
+        .items
+        .into_iter()
+        .map(|item| item.keyword.normalized().to_owned())
+        .collect())
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -272,9 +330,13 @@ async fn add_dependency(
 }
 
 async fn add_keyword(pool: &PgPool, version_id: Uuid, keyword: &str) -> Result<(), sqlx::Error> {
+    // `(package_version_id, ordinal)` is the primary key, so the ordinal has to
+    // advance for a version carrying more than one keyword.
     query(
         "INSERT INTO package_version_keywords (package_version_id, ordinal, display_name)
-         VALUES ($1, 0, $2)",
+         SELECT $1, coalesce(max(ordinal) + 1, 0), $2
+         FROM package_version_keywords
+         WHERE package_version_id = $1",
     )
     .bind(version_id)
     .bind(keyword)

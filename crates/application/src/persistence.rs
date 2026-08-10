@@ -371,14 +371,23 @@ pub struct PackageSearchCriteria {
     pub namespace: Option<IdentitySegment>,
     pub keyword: Option<IdentitySegment>,
     pub package_type: Option<PackageKind>,
+    pub sort: PackageSortOrder,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PackageSearchBoundary {
-    pub match_class: u8,
-    pub relevance: i64,
-    pub namespace: String,
-    pub package: String,
+/// The result ordering a catalog request asks for.
+///
+/// `Relevance` is only meaningful alongside a query; without one every row
+/// scores zero and the order collapses to the normalized-name tiebreak, which
+/// is what `Name` asks for outright.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PackageSortOrder {
+    #[default]
+    Relevance,
+    Name,
+    Downloads,
+    RecentDownloads,
+    Updated,
+    Created,
 }
 
 #[derive(Clone, Debug)]
@@ -390,8 +399,18 @@ pub struct PackageSearchRecord {
     pub description: Option<String>,
     pub published_at: OffsetDateTime,
     pub yanked: bool,
-    pub match_class: u8,
-    pub relevance: i64,
+    pub downloads_total: i64,
+    pub downloads_30d: i64,
+}
+
+/// One page of catalog rows plus the size of the full result set.
+///
+/// The total comes from a `COUNT(*) OVER ()` in the same statement, so a page
+/// request stays a single round trip.
+#[derive(Clone, Debug)]
+pub struct PackageSearchPageRecord {
+    pub items: Vec<PackageSearchRecord>,
+    pub total: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -418,10 +437,22 @@ pub struct KeywordRecord {
     pub package_count: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct KeywordBoundary {
-    pub package_count: u64,
-    pub keyword: String,
+/// The orderings the keyword index can be read in.
+///
+/// `Packages` is the default because the busiest topics are the useful way into
+/// an unfamiliar registry; `Name` is for looking one up.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum KeywordSortOrder {
+    #[default]
+    Packages,
+    Name,
+}
+
+/// One page of keywords plus the size of the whole index.
+#[derive(Clone, Debug)]
+pub struct KeywordPageRecord {
+    pub items: Vec<KeywordRecord>,
+    pub total: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -667,9 +698,9 @@ pub trait PackageSearchReader: Send + Sync {
     async fn search_packages(
         &self,
         criteria: &PackageSearchCriteria,
-        boundary: Option<&PackageSearchBoundary>,
-        limit: u16,
-    ) -> Result<Vec<PackageSearchRecord>, RepositoryError>;
+        page: u32,
+        per_page: u16,
+    ) -> Result<PackageSearchPageRecord, RepositoryError>;
 }
 
 #[async_trait]
@@ -684,9 +715,10 @@ pub trait DiscoveryReader: Send + Sync {
 
     async fn keywords(
         &self,
-        boundary: Option<&KeywordBoundary>,
-        limit: u16,
-    ) -> Result<Vec<KeywordRecord>, RepositoryError>;
+        sort: KeywordSortOrder,
+        page: u32,
+        per_page: u16,
+    ) -> Result<KeywordPageRecord, RepositoryError>;
 
     async fn package_version_history(
         &self,

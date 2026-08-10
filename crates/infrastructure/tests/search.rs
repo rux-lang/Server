@@ -1,9 +1,7 @@
 use std::error::Error;
 use uuid::Uuid;
 
-use rux_application::{
-    PackageKind, PackageSearchBoundary, PackageSearchCriteria, PackageSearchReader,
-};
+use rux_application::{PackageKind, PackageSearchCriteria, PackageSearchReader, PackageSortOrder};
 use rux_domain::{IdentitySegment, SemanticVersion};
 use rux_infrastructure::PostgresRepository;
 use sqlx::{PgPool, query, query_scalar};
@@ -76,7 +74,7 @@ async fn representative_selection_is_stable_first_and_uses_domain_version_order(
     )
     .await?;
 
-    let results = repository.search_packages(&browse(), None, 10).await?;
+    let results = repository.search_packages(&browse(), 1, 10).await?.items;
     assert_eq!(version_for(&results, "Parser"), "1.0.0");
     assert_eq!(version_for(&results, "Legacy"), "1.0.0");
     assert!(
@@ -131,21 +129,15 @@ async fn search_ranks_literal_signals_and_filters_representative_metadata(
     .await?;
 
     let results = repository
-        .search_packages(&query_criteria("json"), None, 10)
-        .await?;
+        .search_packages(&query_criteria("json"), 1, 10)
+        .await?
+        .items;
     assert_eq!(
         results
             .iter()
             .map(|record| record.package.as_str())
             .collect::<Vec<_>>(),
         ["Json", "Codec", "Streaming"]
-    );
-    assert_eq!(
-        results
-            .iter()
-            .map(|record| record.match_class)
-            .collect::<Vec<_>>(),
-        [4, 3, 1]
     );
 
     let filtered = repository
@@ -156,48 +148,115 @@ async fn search_ranks_literal_signals_and_filters_representative_metadata(
                 namespace: Some(identity("community")),
                 keyword: Some(identity("json")),
                 package_type: Some(PackageKind::Source),
+                sort: PackageSortOrder::Name,
             },
-            None,
+            1,
             10,
         )
         .await?;
-    assert_eq!(filtered.len(), 1);
-    assert_eq!(filtered[0].package.as_str(), "Codec");
+    assert_eq!(filtered.items.len(), 1);
+    assert_eq!(filtered.items[0].package.as_str(), "Codec");
+    assert_eq!(filtered.total, 1);
 
     let literal_wildcard = repository
-        .search_packages(&query_criteria("%"), None, 10)
+        .search_packages(&query_criteria("%"), 1, 10)
         .await?;
-    assert!(literal_wildcard.is_empty());
+    assert!(literal_wildcard.items.is_empty());
+    assert_eq!(literal_wildcard.total, 0);
     Ok(())
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn keyset_boundary_pages_rank_and_identity_without_duplicates(pool: PgPool) -> TestResult {
+async fn offset_pages_cover_every_row_once_and_report_the_full_total(pool: PgPool) -> TestResult {
     let repository = PostgresRepository::new(pool.clone());
     for package_name in ["Alpha", "Beta", "Gamma"] {
         let package = create_package(&pool, "Rux", package_name).await?;
         insert_version(&pool, package, "1.0.0", PackageKind::Source, None, false).await?;
     }
 
-    let first = repository.search_packages(&browse(), None, 2).await?;
-    assert_eq!(first.len(), 2);
-    let last = first.last().expect("first page should have a boundary");
-    let boundary = PackageSearchBoundary {
-        match_class: last.match_class,
-        relevance: last.relevance,
-        namespace: last.namespace.normalized().to_owned(),
-        package: last.package.normalized().to_owned(),
-    };
-    let second = repository
-        .search_packages(&browse(), Some(&boundary), 2)
-        .await?;
+    let first = repository.search_packages(&browse(), 1, 2).await?;
+    assert_eq!(first.items.len(), 2);
+    // The total describes the whole result set, not the page.
+    assert_eq!(first.total, 3);
+    let second = repository.search_packages(&browse(), 2, 2).await?;
+    assert_eq!(second.total, 3);
     assert_eq!(
         first
+            .items
             .iter()
-            .chain(&second)
+            .chain(&second.items)
             .map(|record| record.package.as_str())
             .collect::<Vec<_>>(),
         ["Alpha", "Beta", "Gamma"]
+    );
+
+    // A page past the end is empty rather than an error, and carries no total
+    // of its own because the window count rides on the rows.
+    let past_end = repository.search_packages(&browse(), 9, 2).await?;
+    assert!(past_end.items.is_empty());
+    assert_eq!(past_end.total, 0);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn sort_orders_select_download_counts_and_recency(pool: PgPool) -> TestResult {
+    let repository = PostgresRepository::new(pool.clone());
+    // Alpha is the most downloaded all time, Beta the most downloaded lately,
+    // Gamma has never been downloaded at all and must still appear.
+    let alpha = insert_sole_version(&pool, "Alpha").await?;
+    let beta = insert_sole_version(&pool, "Beta").await?;
+    insert_sole_version(&pool, "Gamma").await?;
+    add_downloads(&pool, alpha, 5, 400).await?;
+    add_downloads(&pool, alpha, 1, 0).await?;
+    add_downloads(&pool, beta, 4, 0).await?;
+
+    let by_total = packages_sorted(&repository, PackageSortOrder::Downloads).await?;
+    assert_eq!(by_total, ["Alpha", "Beta", "Gamma"]);
+    let by_recent = packages_sorted(&repository, PackageSortOrder::RecentDownloads).await?;
+    assert_eq!(by_recent, ["Beta", "Alpha", "Gamma"]);
+
+    let counts = repository
+        .search_packages(&browse(), 1, 10)
+        .await?
+        .items
+        .into_iter()
+        .map(|record| {
+            (
+                record.package.as_str().to_owned(),
+                record.downloads_total,
+                record.downloads_30d,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        counts,
+        [
+            ("Alpha".into(), 6, 1),
+            ("Beta".into(), 4, 4),
+            ("Gamma".into(), 0, 0),
+        ]
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn created_and_updated_sorts_use_distinct_timestamps(pool: PgPool) -> TestResult {
+    let repository = PostgresRepository::new(pool.clone());
+    // Alpha is the older package but was released again yesterday; Beta is
+    // newer and has not shipped since. The two orderings must disagree.
+    let alpha = create_package_at(&pool, "Rux", "Alpha", 10).await?;
+    insert_version_published(&pool, alpha, "1.0.0", PackageKind::Source, None, false, 10).await?;
+    insert_version_published(&pool, alpha, "2.0.0", PackageKind::Source, None, false, 1).await?;
+    let beta = create_package_at(&pool, "Rux", "Beta", 2).await?;
+    insert_version_published(&pool, beta, "1.0.0", PackageKind::Source, None, false, 5).await?;
+
+    assert_eq!(
+        packages_sorted(&repository, PackageSortOrder::Created).await?,
+        ["Beta", "Alpha"]
+    );
+    assert_eq!(
+        packages_sorted(&repository, PackageSortOrder::Updated).await?,
+        ["Alpha", "Beta"]
     );
     Ok(())
 }
@@ -209,6 +268,7 @@ fn browse() -> PackageSearchCriteria {
         namespace: None,
         keyword: None,
         package_type: None,
+        sort: PackageSortOrder::Name,
     }
 }
 
@@ -216,8 +276,22 @@ fn query_criteria(query: &str) -> PackageSearchCriteria {
     PackageSearchCriteria {
         query: Some(query.into()),
         identity_query: Some(query.to_lowercase().replace('_', "-")),
+        sort: PackageSortOrder::Relevance,
         ..browse()
     }
+}
+
+async fn packages_sorted(
+    repository: &PostgresRepository,
+    sort: PackageSortOrder,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    Ok(repository
+        .search_packages(&PackageSearchCriteria { sort, ..browse() }, 1, 10)
+        .await?
+        .items
+        .into_iter()
+        .map(|record| record.package.as_str().to_owned())
+        .collect())
 }
 
 fn identity(value: &str) -> IdentitySegment {
@@ -238,6 +312,15 @@ async fn create_package(
     namespace: &str,
     package: &str,
 ) -> Result<Uuid, sqlx::Error> {
+    create_package_at(pool, namespace, package, 0).await
+}
+
+async fn create_package_at(
+    pool: &PgPool,
+    namespace: &str,
+    package: &str,
+    created_days_ago: i32,
+) -> Result<Uuid, sqlx::Error> {
     let namespace_id = query_scalar::<_, Uuid>(
         "INSERT INTO namespaces (display_name)
          VALUES ($1)
@@ -248,12 +331,13 @@ async fn create_package(
     .fetch_one(pool)
     .await?;
     query_scalar::<_, Uuid>(
-        "INSERT INTO packages (namespace_id, display_name)
-         VALUES ($1, $2)
+        "INSERT INTO packages (namespace_id, display_name, created_at)
+         VALUES ($1, $2, now() - make_interval(days => $3))
          RETURNING id",
     )
     .bind(namespace_id)
     .bind(package)
+    .bind(created_days_ago)
     .fetch_one(pool)
     .await
 }
@@ -266,6 +350,31 @@ async fn insert_version(
     description: Option<&str>,
     yanked: bool,
 ) -> Result<Uuid, sqlx::Error> {
+    insert_version_published(
+        pool,
+        package_id,
+        value,
+        package_type,
+        description,
+        yanked,
+        0,
+    )
+    .await
+}
+
+/// Inserts a version released `days_ago` in the past.
+///
+/// `published_at` is covered by the immutability trigger, so a test that needs
+/// a specific release date has to supply it at insert time.
+async fn insert_version_published(
+    pool: &PgPool,
+    package_id: Uuid,
+    value: &str,
+    package_type: PackageKind,
+    description: Option<&str>,
+    yanked: bool,
+    days_ago: i32,
+) -> Result<Uuid, sqlx::Error> {
     let version = SemanticVersion::new(value).expect("valid test version");
     let suffix = value.replace(['+', '.'], "-");
     query_scalar::<_, Uuid>(
@@ -274,11 +383,12 @@ async fn insert_version(
              manifest_schema_version, min_rux, package_type, description,
              normalized_manifest, artifact_sha256, artifact_size, storage_key,
              artifact_file_count, artifact_expanded_bytes, source_file_count,
-             source_line_count, yanked_at
+             source_line_count, published_at, yanked_at
          ) VALUES (
              $1, $2, $3::NUMERIC, $4::NUMERIC, $5::NUMERIC, $6, $7,
              1, '0.4.0', $8, $9, '{}', decode(repeat('ab', 32), 'hex'), 1024,
              $10, 2, 2048, 1, 10,
+             now() - make_interval(days => $12),
              CASE WHEN $11 THEN now() ELSE NULL END
          )
          RETURNING id",
@@ -298,8 +408,35 @@ async fn insert_version(
     .bind(description)
     .bind(format!("packages/{package_id}-{suffix}.ruxpkg"))
     .bind(yanked)
+    .bind(days_ago)
     .fetch_one(pool)
     .await
+}
+
+async fn insert_sole_version(pool: &PgPool, package: &str) -> Result<Uuid, sqlx::Error> {
+    let id = create_package(pool, "Rux", package).await?;
+    insert_version(pool, id, "1.0.0", PackageKind::Source, None, false).await
+}
+
+/// Records `count` downloads `days_ago` in the past, so a row can sit inside or
+/// outside the 30-day recent window on purpose.
+async fn add_downloads(
+    pool: &PgPool,
+    version: Uuid,
+    count: i32,
+    days_ago: i32,
+) -> Result<(), sqlx::Error> {
+    query(
+        "INSERT INTO download_events (package_version_id, occurred_at)
+         SELECT $1, now() - make_interval(days => $3)
+         FROM generate_series(1, $2)",
+    )
+    .bind(version)
+    .bind(count)
+    .bind(days_ago)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 async fn add_keyword(pool: &PgPool, version: Uuid, keyword: &str) -> Result<(), sqlx::Error> {

@@ -232,11 +232,15 @@ Successful responses carry `Cache-Control: public, no-cache` and a strong `ETag`
 
 `GET /v1/search` is public and unauthenticated. It powers both catalog browsing and ranked literal search. The optional `q` parameter is trimmed, collapses whitespace, excludes NUL, and is limited to 256 UTF-8 bytes. An omitted or blank query browses packages in normalized namespace and package order. Search text is passed to PostgreSQL `plainto_tsquery` and escaped before partial identity matching, so punctuation and wildcard characters are data rather than query syntax.
 
-Optional `namespace` and `keyword` parameters are exact normalized registry identity filters. `package_type` is exactly `program`, `library`, or `source`. Filters apply to the representative version. `limit` defaults to 20 and must be between 1 and 100 inclusive. Query parameters are closed and scalar: unknown, repeated, malformed, or out-of-range values return `invalid_request`.
+Optional `namespace` and `keyword` parameters are exact normalized registry identity filters. `package_type` is exactly `program`, `library`, or `source`. Filters apply to the representative version. Query parameters are closed and scalar: unknown, repeated, malformed, or out-of-range values return `invalid_request`.
+
+`sort` selects the result ordering and is exactly one of `relevance`, `name`, `downloads`, `recent_downloads`, `updated`, or `created`. It defaults to `relevance` when `q` is present and to `name` otherwise, because relevance scores are uniformly zero without a query. `downloads` counts every recorded download; `recent_downloads` counts only the last 30 days, the same window highlights calls popular. `updated` orders by the representative version's publication date, `created` by when the package itself first appeared. Every ordering ends with normalized namespace and package as a total tie-breaker, so a row cannot land on two pages or on none.
+
+Pagination is offset-based. `page` is 1-based, defaults to 1, and is bounded from 1 through 10,000 — a deep offset costs as much as every page before it, so the ceiling keeps a crafted request from scanning the whole catalog. `per_page` defaults to 20 and must be between 1 and 100 inclusive. `limit` is a deprecated alias for `per_page`; supplying both returns `conflicting_page_size`. A page past the end returns an empty `data` array rather than an error.
 
 Each package is represented by its highest non-yanked stable version, then its highest non-yanked prerelease. If every version is yanked, the same stable-first ordering selects a yanked fallback and the result exposes `yanked: true`. Semantic Version ordering includes build metadata as the deterministic tie-breaker established by the domain contract.
 
-With `q`, results are ordered by exact qualified identity, exact package, exact keyword, exact namespace, and then partial or full-text relevance. Quantized trigram and full-text ranks break ties before normalized namespace and package. The response is a collection envelope with page metadata:
+Under the default ordering with `q`, results are ordered by exact qualified identity, exact package, exact keyword, exact namespace, and then partial or full-text relevance. Quantized trigram and full-text ranks break ties before normalized namespace and package. The response is a collection envelope with page metadata:
 
 ```json
 {
@@ -249,25 +253,31 @@ With `q`, results are ordered by exact qualified identity, exact package, exact 
       "description": "Fast JSON parsing with streaming support.",
       "published_at": "2026-03-10T12:00:00Z",
       "yanked": false,
+      "downloads_total": 48210,
+      "downloads_30d": 3105,
       "package_url": "/v1/packages/rux/json",
       "version_url": "/v1/packages/rux/json/1.1.0"
     }
   ],
   "meta": {
-    "next_cursor": null
+    "total": 137,
+    "page": 1,
+    "per_page": 20
   }
 }
 ```
 
-`meta.next_cursor` is either `null` or an opaque, versioned keyset cursor bound to the normalized query and filters. Clients may change `limit` between pages but must otherwise repeat the same criteria. Invalid, unsupported, or criteria-mismatched cursors return `invalid_request`. No total count is calculated. Cursors are stable for an unchanged catalog; publication or yank changes between requests may move results because pagination is not a database snapshot. Persistence failures return `search_unavailable`.
+`meta.total` is the size of the whole result set for the given criteria, counted in the same statement that reads the page, so a client can render a page count without a second request. It is `0` on a page past the end, where there are no rows to carry it. `meta.page` and `meta.per_page` echo the effective values after defaulting. Pagination is not a database snapshot: publication or yank changes between requests may move a result across a page boundary. Persistence failures return `search_unavailable`.
 
 ## Package discovery
 
-Discovery reads are public and unauthenticated. Except for highlights, each collection uses an opaque versioned keyset cursor and returns `{"data": [...], "meta": {"next_cursor": null}}`. Unknown, repeated, malformed, or out-of-range query parameters return `invalid_request`. Ordinary discovery limits default to 20 and are bounded from 1 through 100. Sitemap limits default to 100 and are bounded from 1 through 1,000. A cursor is bound to its collection and, for package-scoped reads, its normalized package identity.
+Discovery reads are public and unauthenticated. Except for highlights and keywords, each collection uses an opaque versioned keyset cursor and returns `{"data": [...], "meta": {"next_cursor": null}}`. Unknown, repeated, malformed, or out-of-range query parameters return `invalid_request`. Ordinary discovery limits default to 20 and are bounded from 1 through 100. Sitemap limits default to 100 and are bounded from 1 through 1,000. A cursor is bound to its collection and, for package-scoped reads, its normalized package identity. Cursor kind `2` is retired — it belonged to the keyword index before it moved to page numbers — and is never reissued.
 
 `GET /v1/packages/{namespace}/{package}/dependents` lists one row per package whose representative version declares the requested target. Representative selection matches search: highest active stable, then active prerelease, then a yanked stable-first fallback. Multiple aliases targeting the same package are grouped into ordered `requirements` containing the display alias and original version range. Results are ordered by normalized dependent namespace and package. A missing target returns `package_not_found`.
 
-`GET /v1/keywords` aggregates the representative versions' keywords. Each row contains display and normalized spelling plus the number of distinct packages. The newest representative publication supplies display spelling, with package identity as the deterministic tie-breaker. Results are ordered by package count descending and normalized keyword.
+`GET /v1/keywords` aggregates the representative versions' keywords. Each row contains display and normalized spelling plus the number of distinct packages. The newest representative publication supplies display spelling, with package identity as the deterministic tie-breaker.
+
+The keyword index is the one discovery collection paginated by page number rather than by cursor, because it offers a choice of ordering that a keyset cursor cannot follow. `sort` is `packages` (the default — package count descending, then normalized keyword) or `name` (normalized keyword ascending); both end on the normalized keyword, which is unique per row, so the ordering is total. `page` is 1-based, defaults to 1, and is bounded from 1 through 10,000. `per_page` defaults to 20 and is bounded from 1 through 100, with `limit` accepted as a deprecated alias — supplying both returns `conflicting_page_size`. The envelope is `{"data": [...], "meta": {"total": 137, "page": 1, "per_page": 20}}`, where `total` is the number of distinct keywords and is `0` on a page past the end.
 
 `GET /v1/packages/{namespace}/{package}/versions` returns every immutable release, including prereleases, build variants, and yanked versions. Rows are ordered by descending registry Semantic Version total order and expose the version, minimum Rux version, package type, publication time, yank state, and canonical metadata and download URLs. A missing package returns `package_not_found`.
 

@@ -108,6 +108,7 @@ use crate::contract::{Problem, ProblemResponse, ValidationError};
         crate::discovery::DependentPackageDocument,
         crate::discovery::DependentsResponse,
         crate::discovery::KeywordDocument,
+        crate::discovery::KeywordPageMeta,
         crate::discovery::KeywordsResponse,
         crate::discovery::VersionHistoryDocument,
         crate::discovery::VersionsResponse,
@@ -551,8 +552,10 @@ mod tests {
             "namespace",
             "keyword",
             "package_type",
+            "sort",
+            "page",
+            "per_page",
             "limit",
-            "cursor",
         ] {
             assert!(
                 parameters.iter().any(|parameter| parameter["name"] == name),
@@ -623,6 +626,29 @@ mod tests {
         assert_eq!(
             document["components"]["schemas"]["KeywordDocument"]["required"],
             serde_json::json!(["keyword", "normalized_keyword", "package_count"])
+        );
+        // The keyword index pages by number while its sibling collections still
+        // page by cursor, so its parameters are documented separately.
+        let keyword_parameters = document["paths"]["/keywords"]["get"]["parameters"]
+            .as_array()
+            .expect("keyword parameters should be an array");
+        for name in ["sort", "page", "per_page", "limit"] {
+            assert!(
+                keyword_parameters
+                    .iter()
+                    .any(|parameter| parameter["name"] == name),
+                "missing keyword parameter {name}"
+            );
+        }
+        assert!(
+            !keyword_parameters
+                .iter()
+                .any(|parameter| parameter["name"] == "cursor"),
+            "the keyword index no longer takes a cursor"
+        );
+        assert_eq!(
+            document["components"]["schemas"]["KeywordPageMeta"]["required"],
+            serde_json::json!(["total", "page", "per_page"])
         );
     }
 }
