@@ -283,7 +283,7 @@ async fn insert_version(
              source_line_count, published_at, yanked_at
          ) VALUES (
              $1, $2, $3::NUMERIC, $4::NUMERIC, $5::NUMERIC, $6, $7,
-             1, '0.4.0', 'library', $2, '{}', decode(repeat('ab', 32), 'hex'), 1,
+             1, '0.4.0', 'shared_library', $2, '{}', decode(repeat('ab', 32), 'hex'), 1,
              $8, 2, 1, 1, 0, $9,
              CASE WHEN $10 THEN $9::TIMESTAMPTZ + interval '1 second' ELSE NULL END
          ) RETURNING id",

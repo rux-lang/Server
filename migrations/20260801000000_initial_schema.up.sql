@@ -222,7 +222,7 @@ CREATE TABLE package_versions (
     CONSTRAINT package_versions_manifest_schema CHECK (manifest_schema_version = 1),
     CONSTRAINT package_versions_min_rux_length CHECK (octet_length(min_rux) BETWEEN 1 AND 256),
     CONSTRAINT package_versions_package_type CHECK (
-        package_type IN ('program', 'library', 'source')
+        package_type IN ('executable', 'shared_library', 'static_library', 'source_library')
     ),
     CONSTRAINT package_versions_description_length CHECK (
         description IS NULL OR octet_length(description) <= 2048

@@ -13,7 +13,7 @@ MinRux = "0.4.0"
 Namespace = "Rux"
 Name = "Example"
 Version = "1.2.3"
-Type = "Source"
+Type = "SourceLibrary"
 Description = "Example package"
 Authors = ["Rux Contributors <info@rux-lang.dev>"]
 Keywords = ["Example", "Registry"]
@@ -56,13 +56,14 @@ Tracing = false
 
 A package requires `Name`, `Version`, and `Type`. `Namespace` is optional for local validation and required by the publication profile. Names and namespaces use registry identity-segment rules, and versions use the registry's strict SemVer rules. `Type` is exactly one of:
 
-| Type      | Meaning                                                              |
-| --------- | -------------------------------------------------------------------- |
-| `Program` | A runnable executable with a `Main` entry point.                     |
-| `Library` | A dynamic library linked by dependents and loaded at run time.       |
-| `Source`  | Rux source files compiled directly into dependent packages.          |
+| Type             | Meaning                                                       |
+| ---------------- | ------------------------------------------------------------- |
+| `Executable`     | A runnable native executable with a `Main` entry point.       |
+| `SharedLibrary`  | A native shared library.                                      |
+| `StaticLibrary`  | A native static archive.                                      |
+| `SourceLibrary`  | Rux source files compiled directly into dependent packages.   |
 
-Manifest v1 has no separate `SharedLibrary` type because `Library` already denotes one, and static archives are not a package type.
+The spellings are exact and case-sensitive. `Program`, `Library`, and `Source` are invalid with no compatibility aliases.
 
 `License` is a strict SPDX expression and `LicenseFile` is a package-relative path to the licence text in the archive. The two are independent: a package may set either, both, or neither. A field whose name ends in `File` always names an archive entry, so `ReadmeFile` and `LicenseFile` share one path contract. Repository and homepage values are absolute HTTP or HTTPS URLs with a host and without credentials. Keywords use identity-segment syntax and cannot collide after normalization.
 
@@ -88,7 +89,7 @@ A manifest contains exactly one of `Package` or `Workspace`. Workspace package p
 
 ## Validation profiles
 
-Callers select validation policy; the selected profile is not stored in `Rux.toml`. Local validation accepts package and workspace manifests, allows a manifest to omit `Manifest.MinRux` and a package to omit `Namespace`, and permits path dependencies. Publication validation accepts only package manifests carrying both `Manifest.MinRux` and `Package.Namespace`, and rejects every path dependency. Publication failures use the same stable, source-located, deterministically ordered diagnostics as schema failures.
+Callers select validation policy; the selected profile is not stored in `Rux.toml`. Local validation accepts package and workspace manifests, allows a manifest to omit `Manifest.MinRux` and a package to omit `Namespace`, and permits path dependencies. Publication validation accepts only SourceLibrary package manifests carrying both `Manifest.MinRux` and `Package.Namespace`, and rejects every path dependency. Executable, SharedLibrary, and StaticLibrary produce a `not_publishable` diagnostic at `Package.Type` in Rux 0.4.0. Publication failures use the same stable, source-located, deterministically ordered diagnostics as schema failures.
 
 ## Build modes
 

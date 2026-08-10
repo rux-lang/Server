@@ -201,9 +201,10 @@ fn canonical_query(value: &str) -> Option<String> {
 
 fn parse_package_type(value: &str) -> Result<PackageKind, PackageSearchError> {
     match value {
-        "program" => Ok(PackageKind::Program),
-        "library" => Ok(PackageKind::Library),
-        "source" => Ok(PackageKind::Source),
+        "executable" => Ok(PackageKind::Executable),
+        "shared_library" => Ok(PackageKind::SharedLibrary),
+        "static_library" => Ok(PackageKind::StaticLibrary),
+        "source_library" => Ok(PackageKind::SourceLibrary),
         _ => Err(PackageSearchError::new(
             PackageSearchErrorKind::InvalidPackageType,
         )),
@@ -291,7 +292,7 @@ mod tests {
                 query: Some("  Fast   JSON  ".into()),
                 namespace: Some("Rux_Tools".into()),
                 keyword: Some("Data_Formats".into()),
-                package_type: Some("library".into()),
+                package_type: Some("shared_library".into()),
                 sort: Some("downloads".into()),
                 order: Some("asc".into()),
                 page: Some(3),
@@ -310,7 +311,7 @@ mod tests {
             calls[0].0.keyword.as_ref().unwrap().normalized(),
             "data-formats"
         );
-        assert_eq!(calls[0].0.package_type, Some(PackageKind::Library));
+        assert_eq!(calls[0].0.package_type, Some(PackageKind::SharedLibrary));
         assert_eq!(calls[0].0.sort, PackageSortOrder::Downloads);
         assert_eq!(calls[0].0.order, PackageSortDirection::Ascending);
         assert_eq!(calls[0].1, 3);
@@ -514,7 +515,7 @@ mod tests {
             namespace: IdentitySegment::new("Rux").unwrap(),
             package: IdentitySegment::new(package).unwrap(),
             version: SemanticVersion::new("1.0.0").unwrap(),
-            package_type: PackageKind::Library,
+            package_type: PackageKind::SharedLibrary,
             description: None,
             published_at: OffsetDateTime::UNIX_EPOCH,
             yanked: false,

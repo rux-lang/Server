@@ -268,7 +268,7 @@ mod tests {
             version: SemanticVersion::new("1.0.0+linux").unwrap(),
             manifest_schema_version: 1,
             min_rux: SemanticVersion::new("0.4.0").unwrap(),
-            package_type: PackageKind::Source,
+            package_type: PackageKind::SourceLibrary,
             description: None,
             repository_url: None,
             homepage_url: None,

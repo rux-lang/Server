@@ -79,7 +79,7 @@ async fn local_catalog_seed_populates_representative_data(pool: PgPool) -> Resul
         ]
     );
 
-    // The catalog exercises every rendering path the registry UI has: all three
+    // The catalog exercises every rendering path the registry UI has: all four
     // package kinds, prereleases, build metadata, and yanked releases.
     let package_kinds = query_scalar::<_, String>(
         "SELECT package_type
@@ -89,7 +89,15 @@ async fn local_catalog_seed_populates_representative_data(pool: PgPool) -> Resul
     )
     .fetch_all(&pool)
     .await?;
-    assert_eq!(package_kinds, vec!["library", "program", "source"]);
+    assert_eq!(
+        package_kinds,
+        vec![
+            "executable",
+            "shared_library",
+            "source_library",
+            "static_library"
+        ]
+    );
 
     let variants = query_as::<_, (i64, i64, i64)>(
         "SELECT

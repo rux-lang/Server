@@ -222,9 +222,10 @@ pub struct ApiTokenRecord {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PackageKind {
-    Program,
-    Library,
-    Source,
+    Executable,
+    SharedLibrary,
+    StaticLibrary,
+    SourceLibrary,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

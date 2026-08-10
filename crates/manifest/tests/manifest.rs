@@ -20,7 +20,7 @@ MinRux = "0.4.0"
 Namespace = "Rux"
 Name = "Example_App"
 Version = "1.2.3-alpha.1+linux"
-Type = "Source"
+Type = "SourceLibrary"
 Description = "Example package"
 Authors = ["Rux Contributors <info@rux-lang.dev>"]
 Keywords = ["Registry", "Package-Manager"]
@@ -73,7 +73,7 @@ Channel = "Stable"
     assert_eq!(package.name().as_str(), "Example_App");
     assert_eq!(package.name().normalized(), "example-app");
     assert_eq!(package.version().as_str(), "1.2.3-alpha.1+linux");
-    assert_eq!(package.package_type(), PackageType::Source);
+    assert_eq!(package.package_type(), PackageType::SourceLibrary);
     assert_eq!(package.description(), Some("Example package"));
     assert_eq!(package.authors().len(), 1);
     assert_eq!(package.keywords()[0].normalized(), "registry");
@@ -148,7 +148,7 @@ fn local_profile_preserves_namespace_workspace_and_path_dependency_behavior() {
 [Package]
 Name = "Example"
 Version = "1.0.0"
-Type = "Source"
+Type = "SourceLibrary"
 
 [Dependencies]
 LocalUtil = {{ Path = "../Util" }}
@@ -169,7 +169,7 @@ fn publication_profile_accepts_namespaced_registry_packages() {
 Namespace = "Rux"
 Name = "Example"
 Version = "1.0.0"
-Type = "Source"
+Type = "SourceLibrary"
 
 [Dependencies]
 Io = {{ Namespace = "Rux", Version = "^1.0" }}
@@ -186,7 +186,7 @@ fn publication_profile_locates_and_sorts_all_package_blockers() {
 [Package]
 Name = "Example"
 Version = "1.0.0"
-Type = "Source"
+Type = "SourceLibrary"
 
 [Dependencies]
 Zed = {{ Path = "../Zed" }}
@@ -236,7 +236,7 @@ fn publication_profile_does_not_cascade_from_base_schema_errors() {
 [Package]
 Name = "bad name"
 Version = "1.0.0"
-Type = "Source"
+Type = "SourceLibrary"
 
 [Dependencies]
 LocalUtil = {{ Path = "../Util" }}
@@ -257,7 +257,8 @@ LocalUtil = {{ Path = "../Util" }}
 
 #[test]
 fn min_rux_cannot_predate_manifest_v1() {
-    let package = "\n[Package]\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"Source\"\n";
+    let package =
+        "\n[Package]\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"SourceLibrary\"\n";
     for minimum in ["0.3.99", "0.4.0-alpha.1"] {
         let source = format!("[Manifest]\nVersion = 1\nMinRux = \"{minimum}\"\n{package}");
         assert_eq!(codes(&source), vec![ManifestErrorCode::MinimumRuxTooOld]);
@@ -270,7 +271,7 @@ fn min_rux_cannot_predate_manifest_v1() {
 
 #[test]
 fn min_rux_is_optional_locally_and_required_for_publication() {
-    let package = "\n[Package]\nNamespace = \"Rux\"\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"Source\"\n";
+    let package = "\n[Package]\nNamespace = \"Rux\"\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"SourceLibrary\"\n";
     let source = format!("[Manifest]\nVersion = 1\n{package}");
 
     // A locally-built package need not carry a field only publication uses,
@@ -292,7 +293,7 @@ fn min_rux_is_optional_locally_and_required_for_publication() {
 #[test]
 fn only_debug_and_release_build_tables_are_allowed() {
     let package = format!(
-        "{HEADER}\n[Package]\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"Program\"\n"
+        "{HEADER}\n[Package]\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"Executable\"\n"
     );
 
     let custom = format!("{package}\n[Build.Production]\nOptimization = \"Speed\"\n");
@@ -308,11 +309,12 @@ fn only_debug_and_release_build_tables_are_allowed() {
 }
 
 #[test]
-fn only_program_library_and_source_package_types_are_allowed() {
+fn exactly_four_package_types_are_allowed() {
     for (source, expected) in [
-        ("Program", PackageType::Program),
-        ("Library", PackageType::Library),
-        ("Source", PackageType::Source),
+        ("Executable", PackageType::Executable),
+        ("SharedLibrary", PackageType::SharedLibrary),
+        ("StaticLibrary", PackageType::StaticLibrary),
+        ("SourceLibrary", PackageType::SourceLibrary),
     ] {
         let manifest = parse_manifest(&format!(
             "{HEADER}\n[Package]\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"{source}\"\n"
@@ -324,11 +326,44 @@ fn only_program_library_and_source_package_types_are_allowed() {
         assert_eq!(package.package_type(), expected);
     }
 
-    for legacy in ["Binary", "StaticLibrary", "SharedLibrary"] {
+    for legacy in [
+        "Program",
+        "Library",
+        "Source",
+        "executable",
+        "sharedlibrary",
+        "staticlibrary",
+        "sourcelibrary",
+    ] {
         let source = format!(
             "{HEADER}\n[Package]\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"{legacy}\"\n"
         );
         assert_eq!(codes(&source), vec![ManifestErrorCode::InvalidPackageType]);
+    }
+}
+
+#[test]
+fn publication_profile_accepts_only_source_libraries_in_rux_0_4_0() {
+    for package_type in ["Executable", "SharedLibrary", "StaticLibrary"] {
+        let source = format!(
+            r#"{HEADER}
+[Package]
+Namespace = "Rux"
+Name = "Example"
+Version = "1.0.0"
+Type = "{package_type}"
+"#
+        );
+        let errors = parse_manifest_with_profile(&source, ValidationProfile::Publication)
+            .expect_err("native artifacts are not publishable in 0.4.0");
+        assert_eq!(errors.as_slice().len(), 1);
+        let error = &errors.as_slice()[0];
+        assert_eq!(error.code(), ManifestErrorCode::NotPublishable);
+        assert_eq!(error.path(), &["Package", "Type"]);
+        assert_eq!(
+            error.message(),
+            "Rux 0.4.0 publishes only SourceLibrary packages"
+        );
     }
 }
 
@@ -339,7 +374,7 @@ fn dependency_sources_are_explicit_and_aliases_cannot_collide() {
 [Package]
 Name = "Example"
 Version = "1.0.0"
-Type = "Source"
+Type = "SourceLibrary"
 
 [Dependencies]
 Foo_Bar = {{ Namespace = "Rux", Version = "1" }}
@@ -365,7 +400,7 @@ fn dependency_target_operating_systems_are_exact_nonempty_unique_lists() {
 [Package]
 Name = "Example"
 Version = "1.0.0"
-Type = "Source"
+Type = "SourceLibrary"
 
 [Dependencies]
 Platform = {{ Path = "../Platform", TargetOS = ["Windows", "Linux", "MacOS", "FreeBSD", "OpenBSD", "NetBSD", "DragonFlyBSD", "Illumos"] }}
@@ -405,7 +440,7 @@ Platform = {{ Path = "../Platform", TargetOS = ["Windows", "Linux", "MacOS", "Fr
         ("[1]", ManifestErrorCode::WrongType),
     ] {
         let source = format!(
-            "{HEADER}\n[Package]\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"Source\"\n\n[Dependencies]\nPlatform = {{ Path = \"../Platform\", TargetOS = {value} }}\n"
+            "{HEADER}\n[Package]\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"SourceLibrary\"\n\n[Dependencies]\nPlatform = {{ Path = \"../Platform\", TargetOS = {value} }}\n"
         );
         assert_eq!(codes(&source), vec![expected]);
     }
@@ -451,7 +486,7 @@ fn metadata_and_paths_are_strict() {
 [Package]
 Name = "Example"
 Version = "1.0.0"
-Type = "Source"
+Type = "SourceLibrary"
 License = "not-a-license"
 LicenseFile = "../LICENSE"
 Repository = "ssh://git@example.com/repo"
@@ -492,7 +527,7 @@ fn legacy_unversioned_manifest_is_rejected() {
     let source = r#"[Package]
 Name = "Legacy"
 Version = "0.1.0"
-Type = "Source"
+Type = "SourceLibrary"
 "#;
     assert_eq!(codes(source), vec![ManifestErrorCode::MissingField]);
 }

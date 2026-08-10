@@ -64,7 +64,7 @@ impl PackageAllowlist {
 pub fn manifest_for(source: &str, allowlist: &PackageAllowlist) -> String {
     let mut manifest = format!(
         "[Manifest]\nVersion = {PLAYGROUND_MANIFEST_VERSION}\nMinRux = \"{PLAYGROUND_MIN_RUX_VERSION}\"\n\n\
-         [Package]\nName = \"{PLAYGROUND_PACKAGE_NAME}\"\nVersion = \"{PLAYGROUND_PACKAGE_VERSION}\"\nType = \"Program\"\n"
+         [Package]\nName = \"{PLAYGROUND_PACKAGE_NAME}\"\nVersion = \"{PLAYGROUND_PACKAGE_VERSION}\"\nType = \"Executable\"\n"
     );
 
     let dependencies = resolve_dependencies(source, allowlist);
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(
             rendered,
             "[Manifest]\nVersion = 1\nMinRux = \"0.4.0\"\n\n\
-             [Package]\nName = \"Playground\"\nVersion = \"0.0.0\"\nType = \"Program\"\n"
+             [Package]\nName = \"Playground\"\nVersion = \"0.0.0\"\nType = \"Executable\"\n"
         );
         assert!(parse_manifest(&rendered).is_ok());
     }

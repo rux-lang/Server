@@ -183,6 +183,18 @@ impl<'source> Parser<'source> {
                 "workspace manifests cannot be published",
             ),
             ManifestKind::Package(package) => {
+                if package.package_type() != PackageType::SourceLibrary {
+                    let package_table = root.get("Package").and_then(Item::as_table);
+                    self.push(
+                        ManifestErrorCode::NotPublishable,
+                        path(&["Package", "Type"]),
+                        package_table
+                            .and_then(|table| table.get("Type"))
+                            .and_then(Item::span),
+                        "Rux 0.4.0 publishes only SourceLibrary packages",
+                    );
+                }
+
                 if package.namespace().is_none() {
                     self.push(
                         ManifestErrorCode::MissingField,
@@ -450,15 +462,16 @@ impl<'source> Parser<'source> {
     fn parse_package_type(&mut self, table: &Table) -> Option<PackageType> {
         let (value, span) = self.required_string(table, "Type", &["Package"])?;
         match value {
-            "Program" => Some(PackageType::Program),
-            "Library" => Some(PackageType::Library),
-            "Source" => Some(PackageType::Source),
+            "Executable" => Some(PackageType::Executable),
+            "SharedLibrary" => Some(PackageType::SharedLibrary),
+            "StaticLibrary" => Some(PackageType::StaticLibrary),
+            "SourceLibrary" => Some(PackageType::SourceLibrary),
             _ => {
                 self.push(
                     ManifestErrorCode::InvalidPackageType,
                     path(&["Package", "Type"]),
                     span,
-                    "Type must be Program, Library, or Source",
+                    "Type must be Executable, SharedLibrary, StaticLibrary, or SourceLibrary",
                 );
                 None
             }

@@ -710,18 +710,20 @@ const fn scope_text(value: TokenScope) -> &'static str {
 
 fn package_kind(value: &str) -> Result<PackageKind, RepositoryError> {
     match value {
-        "program" => Ok(PackageKind::Program),
-        "library" => Ok(PackageKind::Library),
-        "source" => Ok(PackageKind::Source),
+        "executable" => Ok(PackageKind::Executable),
+        "shared_library" => Ok(PackageKind::SharedLibrary),
+        "static_library" => Ok(PackageKind::StaticLibrary),
+        "source_library" => Ok(PackageKind::SourceLibrary),
         _ => Err(data_error(format!("unknown package type {value:?}"))),
     }
 }
 
 const fn package_kind_text(value: PackageKind) -> &'static str {
     match value {
-        PackageKind::Program => "program",
-        PackageKind::Library => "library",
-        PackageKind::Source => "source",
+        PackageKind::Executable => "executable",
+        PackageKind::SharedLibrary => "shared_library",
+        PackageKind::StaticLibrary => "static_library",
+        PackageKind::SourceLibrary => "source_library",
     }
 }
 
@@ -2440,9 +2442,10 @@ const fn sitemap_kind_name(kind: SitemapEntryKind) -> &'static str {
 
 const fn package_kind_name(value: PackageKind) -> &'static str {
     match value {
-        PackageKind::Program => "program",
-        PackageKind::Library => "library",
-        PackageKind::Source => "source",
+        PackageKind::Executable => "executable",
+        PackageKind::SharedLibrary => "shared_library",
+        PackageKind::StaticLibrary => "static_library",
+        PackageKind::SourceLibrary => "source_library",
     }
 }
 

@@ -841,7 +841,7 @@ mod tests {
             namespace: identity("Rux"),
             package: identity(package),
             version: SemanticVersion::new("1.0.0").unwrap(),
-            package_type: PackageKind::Library,
+            package_type: PackageKind::SharedLibrary,
             description: None,
             published_at: OffsetDateTime::UNIX_EPOCH,
             yanked: false,
@@ -853,7 +853,7 @@ mod tests {
         PackageVersionHistoryRecord {
             version: SemanticVersion::new(value).unwrap(),
             min_rux: SemanticVersion::new("0.4.0").unwrap(),
-            package_type: PackageKind::Library,
+            package_type: PackageKind::SharedLibrary,
             published_at: OffsetDateTime::UNIX_EPOCH,
             yanked: false,
         }

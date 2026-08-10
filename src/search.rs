@@ -162,9 +162,10 @@ fn search_document(record: &PackageSearchRecord) -> PackageSearchDocument {
 
 const fn package_type_document(value: PackageKind) -> PackageTypeDocument {
     match value {
-        PackageKind::Program => PackageTypeDocument::Program,
-        PackageKind::Library => PackageTypeDocument::Library,
-        PackageKind::Source => PackageTypeDocument::Source,
+        PackageKind::Executable => PackageTypeDocument::Executable,
+        PackageKind::SharedLibrary => PackageTypeDocument::SharedLibrary,
+        PackageKind::StaticLibrary => PackageTypeDocument::StaticLibrary,
+        PackageKind::SourceLibrary => PackageTypeDocument::SourceLibrary,
     }
 }
 
@@ -209,7 +210,7 @@ fn search_problem(kind: PackageSearchErrorKind, page_size_pointer: &str) -> Prob
         ),
         PackageSearchErrorKind::InvalidPackageType => invalid_parameter(
             "invalid_package_type",
-            "must be program, library, or source",
+            "must be executable, shared_library, static_library, or source_library",
             Some("/package_type"),
         ),
         PackageSearchErrorKind::InvalidSort => invalid_parameter(
@@ -303,7 +304,7 @@ mod tests {
                     "namespace": "Rux_Tools",
                     "package": "Json_Parser",
                     "version": "1.2.0",
-                    "package_type": "library",
+                    "package_type": "shared_library",
                     "description": "Literal JSON parsing",
                     "published_at": "2026-08-02T12:00:00Z",
                     "yanked": false,
@@ -432,7 +433,7 @@ mod tests {
             namespace: IdentitySegment::new("Rux_Tools").unwrap(),
             package: IdentitySegment::new("Json_Parser").unwrap(),
             version: SemanticVersion::new("1.2.0").unwrap(),
-            package_type: PackageKind::Library,
+            package_type: PackageKind::SharedLibrary,
             description: Some("Literal JSON parsing".into()),
             published_at: datetime!(2026-08-02 12:00 UTC),
             yanked: false,

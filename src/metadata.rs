@@ -82,9 +82,10 @@ pub(crate) struct PackageVersionDocument {
 #[serde(rename_all = "snake_case")]
 #[schema(rename_all = "snake_case")]
 pub(crate) enum PackageTypeDocument {
-    Program,
-    Library,
-    Source,
+    Executable,
+    SharedLibrary,
+    StaticLibrary,
+    SourceLibrary,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -233,9 +234,10 @@ fn version_document(version: &PackageVersionMetadataRecord) -> PackageVersionDoc
 
 pub(crate) const fn package_type_document(value: PackageKind) -> PackageTypeDocument {
     match value {
-        PackageKind::Program => PackageTypeDocument::Program,
-        PackageKind::Library => PackageTypeDocument::Library,
-        PackageKind::Source => PackageTypeDocument::Source,
+        PackageKind::Executable => PackageTypeDocument::Executable,
+        PackageKind::SharedLibrary => PackageTypeDocument::SharedLibrary,
+        PackageKind::StaticLibrary => PackageTypeDocument::StaticLibrary,
+        PackageKind::SourceLibrary => PackageTypeDocument::SourceLibrary,
     }
 }
 
@@ -518,7 +520,7 @@ mod tests {
             version: SemanticVersion::new("1.2.3+linux").unwrap(),
             manifest_schema_version: 1,
             min_rux: SemanticVersion::new("0.4.0").unwrap(),
-            package_type: PackageKind::Source,
+            package_type: PackageKind::SourceLibrary,
             description: Some("Example package".into()),
             repository_url: Some("https://example.test/repository".into()),
             homepage_url: None,

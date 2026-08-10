@@ -194,17 +194,19 @@ fn publication_metadata(
 
 const fn package_kind(value: PackageType) -> PackageKind {
     match value {
-        PackageType::Program => PackageKind::Program,
-        PackageType::Library => PackageKind::Library,
-        PackageType::Source => PackageKind::Source,
+        PackageType::Executable => PackageKind::Executable,
+        PackageType::SharedLibrary => PackageKind::SharedLibrary,
+        PackageType::StaticLibrary => PackageKind::StaticLibrary,
+        PackageType::SourceLibrary => PackageKind::SourceLibrary,
     }
 }
 
 const fn package_type_name(value: PackageType) -> &'static str {
     match value {
-        PackageType::Program => "program",
-        PackageType::Library => "library",
-        PackageType::Source => "source",
+        PackageType::Executable => "executable",
+        PackageType::SharedLibrary => "shared_library",
+        PackageType::StaticLibrary => "static_library",
+        PackageType::SourceLibrary => "source_library",
     }
 }
 
@@ -460,6 +462,7 @@ fn inspection_problem(error: &InspectionError) -> Problem {
                                     error.span().start().column()
                                 ),
                             )
+                            .with_pointer(format!("/{}", error.path().join("/")))
                         })
                         .collect()
                 },
@@ -548,7 +551,7 @@ MinRux = "0.4.0"
 Namespace = "Rux_Tools"
 Name = "Example_Pkg"
 Version = "1.2.3+native"
-Type = "Source"
+Type = "SourceLibrary"
 Authors = ["Rux Contributors"]
 Keywords = ["Registry"]
 License = "MIT"
@@ -704,6 +707,53 @@ Platform = { Namespace = "Rux", Version = "^1", TargetOS = ["Windows"] }
                 .expect("capture should not be poisoned")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn publication_rejects_native_package_types_as_invalid_artifacts() {
+        for package_type in ["Executable", "SharedLibrary", "StaticLibrary"] {
+            let directory = tempfile::tempdir().expect("temporary directory should be created");
+            let uploads = UploadReceiver::new(directory.path(), ARTIFACT_MAX_BYTES)
+                .expect("receiver should configure");
+            let publications = Arc::new(FakePublications::default());
+            let manifest = MANIFEST.replace(
+                "Type = \"SourceLibrary\"",
+                &format!("Type = \"{package_type}\""),
+            );
+            let package = artifact_package(&manifest, &[("Src/Main.rux", b"Main() {}\n")]);
+
+            let response = router(publications.clone(), uploads)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/packages")
+                        .header(AUTHORIZATION, "Bearer rux_pat_publish_secret")
+                        .header(
+                            axum::http::header::CONTENT_TYPE,
+                            format!("multipart/form-data; boundary={BOUNDARY}"),
+                        )
+                        .body(Body::from(multipart_body(manifest.as_bytes(), &package)))
+                        .expect("request should build"),
+                )
+                .await
+                .expect("router should respond");
+
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body should read");
+            let document: Value = serde_json::from_slice(&bytes).expect("response is JSON");
+            assert_eq!(document["code"], "invalid_artifact");
+            assert_eq!(document["errors"][0]["code"], "not_publishable");
+            assert_eq!(document["errors"][0]["pointer"], "/Package/Type");
+            assert!(
+                publications
+                    .captured
+                    .lock()
+                    .expect("capture should not be poisoned")
+                    .is_none()
+            );
+        }
     }
 
     fn multipart_body(manifest: &[u8], package: &[u8]) -> Vec<u8> {

@@ -553,7 +553,7 @@ MinRux = "0.4.0"
 Namespace = "Rux"
 Name = "Example"
 Version = "1.2.3"
-Type = "Source"
+Type = "SourceLibrary"
 License = "MIT"
 LicenseFile = "LICENSE"
 ReadmeFile = "README.md"
@@ -565,7 +565,7 @@ MinRux = "0.4.0"
 [Package]
 Name = "Example"
 Version = "1.2.3"
-Type = "Source"
+Type = "SourceLibrary"
 "#;
 
     type CapturedUpload = Arc<Mutex<Option<Result<ReceivedUpload, UploadError>>>>;

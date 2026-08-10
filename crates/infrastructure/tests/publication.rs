@@ -511,7 +511,7 @@ fn metadata(namespace: &str, package: &str, version: &str) -> PublicationMetadat
         version: semantic_version(version),
         manifest_schema_version: 1,
         min_rux: semantic_version("0.4.0"),
-        package_type: PackageKind::Source,
+        package_type: PackageKind::SourceLibrary,
         description: Some("Publication transaction fixture".into()),
         repository_url: None,
         homepage_url: None,

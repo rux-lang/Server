@@ -20,7 +20,7 @@ async fn representative_selection_is_stable_first_and_uses_domain_version_order(
         &pool,
         package,
         "1.0.0",
-        PackageKind::Library,
+        PackageKind::SharedLibrary,
         Some("stable active"),
         false,
     )
@@ -29,7 +29,7 @@ async fn representative_selection_is_stable_first_and_uses_domain_version_order(
         &pool,
         package,
         "2.0.0-beta.10",
-        PackageKind::Library,
+        PackageKind::SharedLibrary,
         Some("prerelease active"),
         false,
     )
@@ -38,19 +38,27 @@ async fn representative_selection_is_stable_first_and_uses_domain_version_order(
         &pool,
         package,
         "1.1.0",
-        PackageKind::Library,
+        PackageKind::SharedLibrary,
         Some("stable yanked"),
         true,
     )
     .await?;
 
     let all_yanked = create_package(&pool, "Rux", "Legacy").await?;
-    insert_version(&pool, all_yanked, "1.0.0", PackageKind::Source, None, true).await?;
+    insert_version(
+        &pool,
+        all_yanked,
+        "1.0.0",
+        PackageKind::SourceLibrary,
+        None,
+        true,
+    )
+    .await?;
     insert_version(
         &pool,
         all_yanked,
         "2.0.0-beta.1",
-        PackageKind::Source,
+        PackageKind::SourceLibrary,
         None,
         true,
     )
@@ -61,7 +69,7 @@ async fn representative_selection_is_stable_first_and_uses_domain_version_order(
         &pool,
         builds,
         "3.0.0+native.09",
-        PackageKind::Program,
+        PackageKind::Executable,
         None,
         false,
     )
@@ -70,7 +78,7 @@ async fn representative_selection_is_stable_first_and_uses_domain_version_order(
         &pool,
         builds,
         "3.0.0+portable.1",
-        PackageKind::Program,
+        PackageKind::Executable,
         None,
         false,
     )
@@ -100,7 +108,7 @@ async fn search_ranks_literal_signals_and_filters_representative_metadata(
         &pool,
         exact,
         "1.0.0",
-        PackageKind::Library,
+        PackageKind::SharedLibrary,
         Some("Data format"),
         false,
     )
@@ -112,7 +120,7 @@ async fn search_ranks_literal_signals_and_filters_representative_metadata(
         &pool,
         keyword,
         "1.0.0",
-        PackageKind::Source,
+        PackageKind::SourceLibrary,
         Some("Encoding helpers"),
         false,
     )
@@ -124,7 +132,7 @@ async fn search_ranks_literal_signals_and_filters_representative_metadata(
         &pool,
         text,
         "1.0.0",
-        PackageKind::Library,
+        PackageKind::SharedLibrary,
         Some("Streaming JSON documents"),
         false,
     )
@@ -149,7 +157,7 @@ async fn search_ranks_literal_signals_and_filters_representative_metadata(
                 identity_query: None,
                 namespace: Some(identity("community")),
                 keyword: Some(identity("json")),
-                package_type: Some(PackageKind::Source),
+                package_type: Some(PackageKind::SourceLibrary),
                 sort: PackageSortOrder::Name,
                 order: PackageSortDirection::Ascending,
             },
@@ -174,7 +182,15 @@ async fn offset_pages_cover_every_row_once_and_report_the_full_total(pool: PgPoo
     let repository = PostgresRepository::new(pool.clone());
     for package_name in ["Alpha", "Beta", "Gamma"] {
         let package = create_package(&pool, "Rux", package_name).await?;
-        insert_version(&pool, package, "1.0.0", PackageKind::Source, None, false).await?;
+        insert_version(
+            &pool,
+            package,
+            "1.0.0",
+            PackageKind::SourceLibrary,
+            None,
+            false,
+        )
+        .await?;
     }
 
     let first = repository.search_packages(&browse(), 1, 2).await?;
@@ -295,10 +311,37 @@ async fn created_and_updated_sorts_use_distinct_timestamps(pool: PgPool) -> Test
     // Alpha is the older package but was released again yesterday; Beta is
     // newer and has not shipped since. The two orderings must disagree.
     let alpha = create_package_at(&pool, "Rux", "Alpha", 10).await?;
-    insert_version_published(&pool, alpha, "1.0.0", PackageKind::Source, None, false, 10).await?;
-    insert_version_published(&pool, alpha, "2.0.0", PackageKind::Source, None, false, 1).await?;
+    insert_version_published(
+        &pool,
+        alpha,
+        "1.0.0",
+        PackageKind::SourceLibrary,
+        None,
+        false,
+        10,
+    )
+    .await?;
+    insert_version_published(
+        &pool,
+        alpha,
+        "2.0.0",
+        PackageKind::SourceLibrary,
+        None,
+        false,
+        1,
+    )
+    .await?;
     let beta = create_package_at(&pool, "Rux", "Beta", 2).await?;
-    insert_version_published(&pool, beta, "1.0.0", PackageKind::Source, None, false, 5).await?;
+    insert_version_published(
+        &pool,
+        beta,
+        "1.0.0",
+        PackageKind::SourceLibrary,
+        None,
+        false,
+        5,
+    )
+    .await?;
 
     assert_eq!(
         packages_sorted(
@@ -490,9 +533,10 @@ async fn insert_version_published(
     .bind(version.prerelease())
     .bind(version.build())
     .bind(match package_type {
-        PackageKind::Program => "program",
-        PackageKind::Library => "library",
-        PackageKind::Source => "source",
+        PackageKind::Executable => "executable",
+        PackageKind::SharedLibrary => "shared_library",
+        PackageKind::StaticLibrary => "static_library",
+        PackageKind::SourceLibrary => "source_library",
     })
     .bind(description)
     .bind(format!("packages/{package_id}-{suffix}.ruxpkg"))
@@ -504,7 +548,7 @@ async fn insert_version_published(
 
 async fn insert_sole_version(pool: &PgPool, package: &str) -> Result<Uuid, sqlx::Error> {
     let id = create_package(pool, "Rux", package).await?;
-    insert_version(pool, id, "1.0.0", PackageKind::Source, None, false).await
+    insert_version(pool, id, "1.0.0", PackageKind::SourceLibrary, None, false).await
 }
 
 /// Records `count` downloads `days_ago` in the past, so a row can sit inside or

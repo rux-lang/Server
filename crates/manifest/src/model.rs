@@ -177,11 +177,13 @@ impl PackageManifest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PackageType {
     /// A runnable executable with a `Main` entry point.
-    Program,
-    /// A dynamic library linked by dependents and loaded at run time.
-    Library,
+    Executable,
+    /// A native shared library.
+    SharedLibrary,
+    /// A native static archive.
+    StaticLibrary,
     /// Rux sources compiled directly into dependent packages.
-    Source,
+    SourceLibrary,
 }
 
 /// A validated catalog URL whose submitted spelling is preserved.

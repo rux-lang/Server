@@ -136,6 +136,8 @@ Persistence failures return `dashboard_unavailable`. A missing or ended session 
 
 `POST /v1/packages` requires a bearer token with the `publish` scope and a `multipart/form-data` body containing exactly one case-sensitive `manifest` part and one `package` part. The route applies the documented request, manifest, artifact, expansion, and temporary-storage limits before authorizing the manifest identity and reserving its immutable version.
 
+Rux 0.4.0 publication accepts only `Type = "SourceLibrary"`. An otherwise valid Executable, SharedLibrary, or StaticLibrary upload returns `422 invalid_artifact` with a nested `not_publishable` error whose pointer is `/Package/Type`. The database and read APIs retain all four package-type values for future catalog support.
+
 A successful request returns `201 Created` with the display namespace, package, exact version, and RFC 3339 publication timestamp. `Location` identifies the canonical exact-version resource using normalized namespace and package path segments. The artifact SHA-256, byte size, and internal immutable storage key are persisted but the storage key is never returned.
 
 Malformed multipart requests, invalid artifact diagnostics, authentication and scope failures, namespace policy, immutable version conflicts, and operational storage or database failures use the shared RFC 9457 problem contract. If object storage succeeds but PostgreSQL cannot commit, the object remains for a bounded delayed orphan sweep rather than being deleted in the request path.
@@ -233,7 +235,7 @@ Successful responses carry `Cache-Control: public, no-cache` and a strong `ETag`
 
 `GET /v1/search` is public and unauthenticated. It powers both catalog browsing and ranked literal search. The optional `q` parameter is trimmed, collapses whitespace, excludes NUL, and is limited to 256 UTF-8 bytes. An omitted or blank query browses packages in normalized namespace and package order. Search text is passed to PostgreSQL `plainto_tsquery` and escaped before partial identity matching, so punctuation and wildcard characters are data rather than query syntax.
 
-Optional `namespace` and `keyword` parameters are exact normalized registry identity filters. `package_type` is exactly `program`, `library`, or `source`. Filters apply to the representative version. Query parameters are closed and scalar: unknown, repeated, malformed, or out-of-range values return `invalid_request`.
+Optional `namespace` and `keyword` parameters are exact normalized registry identity filters. `package_type` is exactly `executable`, `shared_library`, `static_library`, or `source_library`. Filters apply to the representative version. Query parameters are closed and scalar: unknown, repeated, malformed, or out-of-range values return `invalid_request`.
 
 `sort` selects the result ordering and is exactly one of `relevance`, `name`, `downloads`, `recent_downloads`, `updated`, or `created`. It defaults to `relevance` when `q` is present and to `name` otherwise, because relevance scores are uniformly zero without a query. `downloads` counts every recorded download; `recent_downloads` counts only the last 30 days, the same window highlights calls popular. `updated` orders by the representative version's publication date, `created` by when the package itself first appeared. The optional `order` is `asc` or `desc`; it defaults to `asc` for `name` and `desc` for every other sort. Relevance only accepts `desc`, because ascending relevance would deliberately surface the weakest matches. Every ordering ends with normalized namespace and package as a total tie-breaker, so a row cannot land on two pages or on none.
 
@@ -250,7 +252,7 @@ Under the default ordering with `q`, results are ordered by exact qualified iden
       "namespace": "Rux",
       "package": "Json",
       "version": "1.1.0",
-      "package_type": "library",
+      "package_type": "shared_library",
       "description": "Fast JSON parsing with streaming support.",
       "published_at": "2026-03-10T12:00:00Z",
       "yanked": false,

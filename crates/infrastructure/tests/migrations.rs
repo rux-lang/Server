@@ -200,7 +200,7 @@ async fn semantic_version_identity_preserves_build_metadata_and_u64_bounds(
              artifact_file_count, artifact_expanded_bytes, source_file_count, source_line_count
          ) VALUES (
              $1, '18446744073709551615.0.0', 18446744073709551615, 0, 0, 1, '0.4.0',
-             'source', '{}', decode(repeat('ab', 32), 'hex'), 1024, 'packages/u64-max.ruxpkg',
+             'source_library', '{}', decode(repeat('ab', 32), 'hex'), 1024, 'packages/u64-max.ruxpkg',
              2, 2048, 1, 1
          )",
     )
@@ -216,7 +216,7 @@ async fn semantic_version_identity_preserves_build_metadata_and_u64_bounds(
                  artifact_file_count, artifact_expanded_bytes, source_file_count, source_line_count
              ) VALUES (
                  $1, '18446744073709551616.0.0', 18446744073709551616, 0, 0, 1, '0.4.0',
-                 'source', '{}', decode(repeat('cd', 32), 'hex'), 1024, 'packages/u64-overflow.ruxpkg',
+                 'source_library', '{}', decode(repeat('cd', 32), 'hex'), 1024, 'packages/u64-overflow.ruxpkg',
                  2, 2048, 1, 1
              )",
         )
@@ -481,7 +481,7 @@ async fn insert_version(
              artifact_sha256, artifact_size, storage_key, artifact_file_count,
              artifact_expanded_bytes, source_file_count, source_line_count
          ) VALUES (
-             $1, $2, 1, 2, 3, $3, 1, '0.4.0', 'source', '{}', $4, 1024,
+             $1, $2, 1, 2, 3, $3, 1, '0.4.0', 'source_library', '{}', $4, 1024,
              $5, 2, 2048, 1, 10
          )
          RETURNING id",

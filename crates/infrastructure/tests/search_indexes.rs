@@ -73,7 +73,7 @@ async fn catalog_search_queries_use_search_indexes(pool: PgPool) -> Result<(), E
              artifact_file_count, artifact_expanded_bytes, source_file_count, source_line_count
          )
          SELECT
-             $1, '2.0.' || sequence, 2, 0, sequence, 1, '0.4.0', 'source', '{}',
+             $1, '2.0.' || sequence, 2, 0, sequence, 1, '0.4.0', 'source_library', '{}',
              decode(repeat('cd', 32), 'hex'), 1024,
              'packages/noise-' || sequence || '.ruxpkg', 2, 2048, 1, 10
          FROM generate_series(1, 128) AS sequence",
@@ -280,7 +280,7 @@ async fn insert_version(
              artifact_sha256, artifact_size, storage_key, artifact_file_count,
              artifact_expanded_bytes, source_file_count, source_line_count
          ) VALUES (
-             $1, $2, 1, 0, 0, 1, '0.4.0', 'source', $3,
+             $1, $2, 1, 0, 0, 1, '0.4.0', 'source_library', $3,
              CASE WHEN $4::TEXT IS NULL THEN NULL ELSE 'README.md' END,
              $4, '{}', decode(repeat('ab', 32), 'hex'), 1024, $5, 2, 2048, 1, 10
          )

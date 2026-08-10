@@ -91,7 +91,7 @@ async fn deletion_anonymizes_security_and_membership_data_but_preserves_history(
              artifact_file_count, artifact_expanded_bytes, source_file_count, source_line_count,
              published_by_user_id
          ) VALUES (
-             $1, '1.0.0', 1, 0, 0, 1, '0.4.0', 'library', '{}'::jsonb, $2, 128,
+             $1, '1.0.0', 1, 0, 0, 1, '0.4.0', 'source_library', '{}'::jsonb, $2, 128,
              'history/archive/1.0.0/package.ruxpkg', 2, 256, 1, 10, $3
          ) RETURNING id",
     )

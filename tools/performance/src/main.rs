@@ -426,7 +426,8 @@ async fn seed_versions_and_children(
          SELECT p.id,
                 version_no::text || '.0.0' || CASE WHEN version_no = $1 THEN '-beta.1' ELSE '' END,
                 version_no, 0, 0, CASE WHEN version_no = $1 THEN 'beta.1' ELSE NULL END,
-                1, '0.4.0', CASE p.ordinal % 3 WHEN 0 THEN 'library' WHEN 1 THEN 'source' ELSE 'program' END,
+                1, '0.4.0', CASE p.ordinal % 4 WHEN 0 THEN 'shared_library' WHEN 1 THEN 'source_library'
+                    WHEN 2 THEN 'static_library' ELSE 'executable' END,
                 CASE WHEN p.ordinal % 20 = 0 THEN 'Needle observability registry search package'
                      WHEN p.ordinal % 7 = 0 THEN 'Streaming serialization package'
                      ELSE 'Representative registry package metadata' END,
@@ -643,7 +644,7 @@ fn fixture_group(
 
 fn publication_manifest(version: &str) -> String {
     format!(
-        "[Manifest]\nVersion = 1\nMinRux = \"0.4.0\"\n\n[Package]\nNamespace = \"{PUBLICATION_NAMESPACE}\"\nName = \"{PUBLICATION_PACKAGE}\"\nVersion = \"{version}\"\nType = \"Source\"\nAuthors = [\"Rux Performance\"]\nKeywords = [\"Registry\", \"Performance\"]\nLicense = \"MIT\"\n"
+        "[Manifest]\nVersion = 1\nMinRux = \"0.4.0\"\n\n[Package]\nNamespace = \"{PUBLICATION_NAMESPACE}\"\nName = \"{PUBLICATION_PACKAGE}\"\nVersion = \"{version}\"\nType = \"SourceLibrary\"\nAuthors = [\"Rux Performance\"]\nKeywords = [\"Registry\", \"Performance\"]\nLicense = \"MIT\"\n"
     )
 }
 
