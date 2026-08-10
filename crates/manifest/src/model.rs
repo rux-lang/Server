@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use rux_domain::{IdentitySegment, SemanticVersion, VersionRange};
+use rux_domain::{IdentitySegment, SemanticVersion, TargetOs, VersionRange};
 
 /// A parsed and validated versioned Rux manifest.
 #[derive(Clone, Debug)]
@@ -231,6 +231,7 @@ impl fmt::Display for ManifestPath {
 pub struct Dependency {
     pub(crate) package: IdentitySegment,
     pub(crate) source: DependencySource,
+    pub(crate) target_os: Vec<TargetOs>,
 }
 
 impl Dependency {
@@ -242,6 +243,12 @@ impl Dependency {
     #[must_use]
     pub fn source(&self) -> &DependencySource {
         &self.source
+    }
+
+    /// Returns the target operating-system allow-list; an empty list matches every target.
+    #[must_use]
+    pub fn target_os(&self) -> &[TargetOs] {
+        &self.target_os
     }
 }
 

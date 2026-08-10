@@ -144,6 +144,7 @@ fn publication_metadata(
                 target_namespace: namespace.clone(),
                 target_package: dependency.package().clone(),
                 version_range: version.clone(),
+                target_os: dependency.target_os().to_vec(),
             })
         })
         .collect::<Option<Vec<_>>>()?;
@@ -273,14 +274,24 @@ fn normalized_manifest(manifest: &Manifest, package: &PackageManifest) -> JsonOb
             let DependencySource::Registry { namespace, version } = dependency.source() else {
                 unreachable!("publication manifests contain only registry dependencies");
             };
-            (
-                alias.as_str().to_owned(),
-                json!({
-                    "namespace": namespace.as_str(),
-                    "package": dependency.package().as_str(),
-                    "version": version.as_str(),
-                }),
-            )
+            let mut normalized = Map::from_iter([
+                ("namespace".into(), json!(namespace.as_str())),
+                ("package".into(), json!(dependency.package().as_str())),
+                ("version".into(), json!(version.as_str())),
+            ]);
+            if !dependency.target_os().is_empty() {
+                normalized.insert(
+                    "target_os".into(),
+                    json!(
+                        dependency
+                            .target_os()
+                            .iter()
+                            .map(|target| target.as_str())
+                            .collect::<Vec<_>>()
+                    ),
+                );
+            }
+            (alias.as_str().to_owned(), Value::Object(normalized))
         })
         .collect::<Map<_, _>>();
 
@@ -541,6 +552,9 @@ Type = "Source"
 Authors = ["Rux Contributors"]
 Keywords = ["Registry"]
 License = "MIT"
+
+[Dependencies]
+Platform = { Namespace = "Rux", Version = "^1", TargetOS = ["Windows"] }
 "#;
 
     #[derive(Debug)]
@@ -638,6 +652,15 @@ License = "MIT"
         assert_eq!(captured.byte_size, package.len() as u64);
         assert_ne!(captured.sha256, ArtifactSha256::new([0; 32]));
         assert_eq!(captured.metadata.namespace.as_str(), "Rux_Tools");
+        assert_eq!(captured.metadata.dependencies[0].target_os.len(), 1);
+        assert_eq!(
+            captured.metadata.dependencies[0].target_os[0].as_str(),
+            "Windows"
+        );
+        assert_eq!(
+            captured.metadata.normalized_manifest["dependencies"]["Platform"]["target_os"],
+            json!(["Windows"])
+        );
         assert_eq!(
             captured.metadata.normalized_manifest["build"]["debug"]["output"],
             "Bin/Debug"

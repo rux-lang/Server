@@ -94,6 +94,8 @@ pub(crate) struct PackageDependencyDocument {
     target_namespace: String,
     target_package: String,
     version_range: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_os: Option<Vec<String>>,
 }
 
 /// An archive entry served alongside the release, as stored.
@@ -243,6 +245,13 @@ fn dependency_document(dependency: &DependencyRecord) -> PackageDependencyDocume
         target_namespace: dependency.target_namespace.as_str().to_owned(),
         target_package: dependency.target_package.as_str().to_owned(),
         version_range: dependency.version_range.as_str().to_owned(),
+        target_os: (!dependency.target_os.is_empty()).then(|| {
+            dependency
+                .target_os
+                .iter()
+                .map(|target| target.as_str().to_owned())
+                .collect()
+        }),
     }
 }
 
@@ -322,7 +331,7 @@ mod tests {
     use rux_application::{
         ArtifactSha256, PackageMetadataError, PackageSummaryRecord, PackageVersionMetadataRecord,
     };
-    use rux_domain::{IdentitySegment, SemanticVersion, VersionRange};
+    use rux_domain::{IdentitySegment, SemanticVersion, TargetOs, VersionRange};
     use serde_json::{Map, Value, json};
     use time::macros::datetime;
     use tower::ServiceExt;
@@ -397,6 +406,7 @@ mod tests {
         assert_eq!(data["checksum"]["algorithm"], "sha256");
         assert_eq!(data["checksum"]["digest"], "04".repeat(32));
         assert_eq!(data["dependencies"][0]["alias"], "Json");
+        assert_eq!(data["dependencies"][0]["target_os"], json!(["Windows"]));
         assert_eq!(
             data["canonical_url"],
             "/v1/packages/rux-tools/example-pkg/1.2.3+linux"
@@ -531,6 +541,7 @@ mod tests {
                 target_namespace: identity("Rux"),
                 target_package: identity("Json"),
                 version_range: VersionRange::new("^1").unwrap(),
+                target_os: vec![TargetOs::Windows],
             }],
         }
     }

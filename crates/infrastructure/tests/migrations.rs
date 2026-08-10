@@ -36,8 +36,9 @@ async fn initial_schema_accepts_a_complete_registry_graph(pool: PgPool) -> Resul
              display_alias,
              target_namespace_display_name,
              target_package_display_name,
-             version_range
-         ) VALUES ($1, 'Fast_Json', 'Acme_Tools', 'Fast_Json', '^2.0')",
+             version_range,
+             target_os
+         ) VALUES ($1, 'Fast_Json', 'Acme_Tools', 'Fast_Json', '^2.0', ARRAY['Linux', 'Windows'])",
     )
     .bind(version_id)
     .execute(&pool)
@@ -78,12 +79,13 @@ async fn initial_schema_accepts_a_complete_registry_graph(pool: PgPool) -> Resul
         .execute(&pool)
         .await?;
 
-    let names = query_as::<_, (String, String, String, String)>(
+    let names = query_as::<_, (String, String, String, String, Vec<String>)>(
         "SELECT
              n.normalized_name,
              p.normalized_name,
              k.normalized_name,
-             d.target_namespace_normalized_name
+             d.target_namespace_normalized_name,
+             d.target_os
          FROM namespaces n
          JOIN packages p ON p.namespace_id = n.id
          JOIN package_versions v ON v.package_id = p.id
@@ -101,7 +103,8 @@ async fn initial_schema_accepts_a_complete_registry_graph(pool: PgPool) -> Resul
             "rux".into(),
             "example".into(),
             "registry-tools".into(),
-            "acme-tools".into()
+            "acme-tools".into(),
+            vec!["Linux".into(), "Windows".into()]
         )
     );
     Ok(())
@@ -314,6 +317,21 @@ async fn credentials_roles_invitations_and_append_only_records_are_constrained(
         .await,
         "dependencies_pkey",
     );
+    for (alias, target_os) in [
+        ("DuplicateTarget", "ARRAY['Windows', 'Windows']"),
+        ("UnknownTarget", "ARRAY['Android']"),
+    ] {
+        let statement = format!(
+            "INSERT INTO dependencies (
+                 package_version_id, display_alias, target_namespace_display_name,
+                 target_package_display_name, version_range, target_os
+             ) VALUES ($1, '{alias}', 'Rux', 'Json', '^1', {target_os})"
+        );
+        assert_constraint(
+            query(&statement).bind(version_id).execute(&pool).await,
+            "dependencies_target_os_valid",
+        );
+    }
 
     assert_constraint(
         query(

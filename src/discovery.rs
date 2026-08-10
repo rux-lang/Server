@@ -95,6 +95,8 @@ pub(crate) struct DiscoveryPageMeta {
 pub(crate) struct DependentRequirementDocument {
     alias: String,
     version_range: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_os: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -483,6 +485,13 @@ fn dependent_document(record: &DependentPackageRecord) -> DependentPackageDocume
             .map(|requirement| DependentRequirementDocument {
                 alias: requirement.alias.as_str().to_owned(),
                 version_range: requirement.version_range.as_str().to_owned(),
+                target_os: (!requirement.target_os.is_empty()).then(|| {
+                    requirement
+                        .target_os
+                        .iter()
+                        .map(|target| target.as_str().to_owned())
+                        .collect()
+                }),
             })
             .collect(),
         package_url: canonical_package_path(
@@ -703,7 +712,7 @@ mod tests {
         KeywordRecord, PackageDownloadDayRecord, PackageDownloadStatisticsRecord,
         PackageHighlightsRecord, PackageKind, PackageVersionHistoryRecord, SitemapEntryRecord,
     };
-    use rux_domain::{IdentitySegment, SemanticVersion, VersionRange};
+    use rux_domain::{IdentitySegment, SemanticVersion, TargetOs, VersionRange};
     use serde_json::{Value, json};
     use time::OffsetDateTime;
     use tower::ServiceExt;
@@ -737,6 +746,7 @@ mod tests {
                         target_namespace: identity("Rux"),
                         target_package: identity("Json"),
                         version_range: VersionRange::new("^1").unwrap(),
+                        target_os: vec![TargetOs::Linux],
                     }],
                 }],
                 next_cursor: Some("opaque".into()),
@@ -854,7 +864,7 @@ mod tests {
                     "description": "HTTP client",
                     "published_at": "1970-01-01T00:00:00Z",
                     "yanked": false,
-                    "requirements": [{"alias": "Json", "version_range": "^1"}],
+                    "requirements": [{"alias": "Json", "version_range": "^1", "target_os": ["Linux"]}],
                     "package_url": "/v1/packages/community-tools/http-client",
                     "version_url": "/v1/packages/community-tools/http-client/1.0.0"
                 }],

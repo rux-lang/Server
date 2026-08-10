@@ -22,7 +22,7 @@ use rux_application::{
     SitemapEntryRecord, TokenAuthorizationTransaction, TokenReader, TokenScope, TokenTransaction,
     TokenUnitOfWork, TokenWriter, TransactionReader, UnitOfWork, UserId, UserRecord, WriteOutcome,
 };
-use rux_domain::{IdentitySegment, SemanticVersion, VersionRange};
+use rux_domain::{IdentitySegment, SemanticVersion, TargetOs, VersionRange};
 use serde_json::Value;
 use sqlx::{FromRow, PgPool, Postgres, Row, Transaction, query, query_as, query_scalar};
 use thiserror::Error;
@@ -311,6 +311,7 @@ struct ResolverIndexRow {
     dependency_target_namespace: Option<String>,
     dependency_target_package: Option<String>,
     dependency_version_range: Option<String>,
+    dependency_target_os: Option<Vec<String>>,
 }
 
 #[derive(FromRow)]
@@ -341,6 +342,7 @@ struct DependentPackageRow {
     dependency_target_namespace: String,
     dependency_target_package: String,
     dependency_version_range: String,
+    dependency_target_os: Vec<String>,
 }
 
 #[derive(FromRow)]
@@ -1132,7 +1134,7 @@ async fn version_record(
     let keywords = query("SELECT display_name FROM package_version_keywords WHERE package_version_id = $1 ORDER BY ordinal")
         .bind(row.id).fetch_all(pool).await.map_err(map_sqlx)?
         .into_iter().map(|item| IdentitySegment::new(item.get::<String, _>("display_name")).map_err(|error| RepositoryError::with_source(RepositoryErrorKind::CorruptData, error))).collect::<Result<Vec<_>, _>>()?;
-    let dependencies = query("SELECT display_alias, target_namespace_display_name, target_package_display_name, version_range FROM dependencies WHERE package_version_id = $1 ORDER BY normalized_alias")
+    let dependencies = query("SELECT display_alias, target_namespace_display_name, target_package_display_name, version_range, target_os FROM dependencies WHERE package_version_id = $1 ORDER BY normalized_alias")
         .bind(row.id).fetch_all(pool).await.map_err(map_sqlx)?
         .into_iter().map(|item| {
             Ok(DependencyRecord {
@@ -1140,6 +1142,7 @@ async fn version_record(
                 target_namespace: IdentitySegment::new(item.get::<String, _>("target_namespace_display_name")).map_err(|error| RepositoryError::with_source(RepositoryErrorKind::CorruptData, error))?,
                 target_package: IdentitySegment::new(item.get::<String, _>("target_package_display_name")).map_err(|error| RepositoryError::with_source(RepositoryErrorKind::CorruptData, error))?,
                 version_range: VersionRange::new(item.get::<String, _>("version_range")).map_err(|error| RepositoryError::with_source(RepositoryErrorKind::CorruptData, error))?,
+                target_os: stored_target_os(item.get::<Vec<String>, _>("target_os"))?,
             })
         }).collect::<Result<Vec<_>, RepositoryError>>()?;
     let readme_file = pair(row.readme_file_path, row.readme_file_text, "readme_file")?;
@@ -1902,7 +1905,8 @@ impl DiscoveryReader for PostgresRepository {
                     d.display_alias AS dependency_alias,
                     d.target_namespace_display_name AS dependency_target_namespace,
                     d.target_package_display_name AS dependency_target_package,
-                    d.version_range AS dependency_version_range
+                    d.version_range AS dependency_version_range,
+                    d.target_os AS dependency_target_os
              FROM dependent_page page
              JOIN dependencies d ON d.package_version_id = page.package_version_id
              WHERE d.target_namespace_normalized_name = $1
@@ -2314,6 +2318,7 @@ fn dependent_package_records(
                 version_range: VersionRange::new(row.dependency_version_range).map_err(
                     |error| RepositoryError::with_source(RepositoryErrorKind::CorruptData, error),
                 )?,
+                target_os: stored_target_os(row.dependency_target_os)?,
             });
     }
     Ok(records)
@@ -2496,7 +2501,8 @@ impl ResolverIndexReader for PostgresRepository {
                     d.display_alias AS dependency_alias,
                     d.target_namespace_display_name AS dependency_target_namespace,
                     d.target_package_display_name AS dependency_target_package,
-                    d.version_range AS dependency_version_range
+                    d.version_range AS dependency_version_range,
+                    d.target_os AS dependency_target_os
              FROM namespaces n
              JOIN packages p ON p.namespace_id = n.id
              LEFT JOIN package_versions v ON v.package_id = p.id
@@ -2557,6 +2563,7 @@ fn resolver_version_columns_present(row: &ResolverIndexRow) -> bool {
         || row.dependency_target_namespace.is_some()
         || row.dependency_target_package.is_some()
         || row.dependency_version_range.is_some()
+        || row.dependency_target_os.is_some()
 }
 
 fn resolver_version(row: &ResolverIndexRow) -> Result<ResolverVersionRecord, RepositoryError> {
@@ -2582,9 +2589,10 @@ fn resolver_dependency(row: ResolverIndexRow) -> Result<Option<DependencyRecord>
         row.dependency_target_namespace,
         row.dependency_target_package,
         row.dependency_version_range,
+        row.dependency_target_os,
     ) {
-        (None, None, None, None) => Ok(None),
-        (Some(alias), Some(namespace), Some(package), Some(version_range)) => {
+        (None, None, None, None, None) => Ok(None),
+        (Some(alias), Some(namespace), Some(package), Some(version_range), Some(target_os)) => {
             Ok(Some(DependencyRecord {
                 alias: stored_identity(alias)?,
                 target_namespace: stored_identity(namespace)?,
@@ -2592,6 +2600,7 @@ fn resolver_dependency(row: ResolverIndexRow) -> Result<Option<DependencyRecord>
                 version_range: VersionRange::new(version_range).map_err(|error| {
                     RepositoryError::with_source(RepositoryErrorKind::CorruptData, error)
                 })?,
+                target_os: stored_target_os(target_os)?,
             }))
         }
         _ => Err(data_error(
@@ -2603,6 +2612,19 @@ fn resolver_dependency(row: ResolverIndexRow) -> Result<Option<DependencyRecord>
 fn stored_identity(value: String) -> Result<IdentitySegment, RepositoryError> {
     IdentitySegment::new(value)
         .map_err(|error| RepositoryError::with_source(RepositoryErrorKind::CorruptData, error))
+}
+
+fn stored_target_os(values: Vec<String>) -> Result<Vec<TargetOs>, RepositoryError> {
+    values
+        .into_iter()
+        .map(|value| {
+            TargetOs::parse(&value).ok_or_else(|| {
+                data_error(format!(
+                    "stored target operating system '{value}' is invalid"
+                ))
+            })
+        })
+        .collect()
 }
 
 fn stored_version(value: &str) -> Result<SemanticVersion, RepositoryError> {
@@ -3072,7 +3094,7 @@ impl CatalogWriter for PostgresTransaction {
             query("INSERT INTO package_version_keywords (package_version_id, ordinal, display_name) VALUES ($1, $2, $3)").bind(row.id).bind(i16::try_from(ordinal).map_err(|_| data_error("too many keywords"))?).bind(keyword.as_str()).execute(&mut *self.transaction).await.map_err(map_sqlx)?;
         }
         for dependency in &version.dependencies {
-            query("INSERT INTO dependencies (package_version_id, display_alias, target_namespace_display_name, target_package_display_name, version_range) VALUES ($1, $2, $3, $4, $5)").bind(row.id).bind(dependency.alias.as_str()).bind(dependency.target_namespace.as_str()).bind(dependency.target_package.as_str()).bind(dependency.version_range.as_str()).execute(&mut *self.transaction).await.map_err(map_sqlx)?;
+            query("INSERT INTO dependencies (package_version_id, display_alias, target_namespace_display_name, target_package_display_name, version_range, target_os) VALUES ($1, $2, $3, $4, $5, $6)").bind(row.id).bind(dependency.alias.as_str()).bind(dependency.target_namespace.as_str()).bind(dependency.target_package.as_str()).bind(dependency.version_range.as_str()).bind(dependency.target_os.iter().map(|target| target.as_str()).collect::<Vec<_>>()).execute(&mut *self.transaction).await.map_err(map_sqlx)?;
         }
         let mut dependencies = version.dependencies.clone();
         dependencies.sort_by(|left, right| left.alias.cmp(&right.alias));

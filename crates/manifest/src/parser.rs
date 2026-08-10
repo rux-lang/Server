@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use rux_domain::{IdentitySegment, SemanticVersion, VersionRange};
+use rux_domain::{IdentitySegment, SemanticVersion, TargetOs, VersionRange};
 use toml_edit::{Document, InlineTable, Item, Table, Value};
 use url::Url;
 
@@ -662,7 +662,7 @@ impl<'source> Parser<'source> {
     ) -> Option<Dependency> {
         self.reject_unknown_inline_keys(
             table,
-            &["Namespace", "Package", "Version", "Path"],
+            &["Namespace", "Package", "Version", "Path", "TargetOS"],
             &["Dependencies", alias_source],
         );
         let package = self
@@ -671,6 +671,7 @@ impl<'source> Parser<'source> {
         let path_value = table.get("Path");
         let namespace_value = table.get("Namespace");
         let version_value = table.get("Version");
+        let target_os = self.parse_dependency_target_os(table, alias_source);
 
         let source = if let Some(path_value) = path_value {
             if namespace_value.is_some() || version_value.is_some() {
@@ -740,7 +741,85 @@ impl<'source> Parser<'source> {
                 .map(|(namespace, version)| DependencySource::Registry { namespace, version })
         };
 
-        source.map(|source| Dependency { package, source })
+        source.zip(target_os).map(|(source, target_os)| Dependency {
+            package,
+            source,
+            target_os,
+        })
+    }
+
+    fn parse_dependency_target_os(
+        &mut self,
+        table: &InlineTable,
+        alias_source: &str,
+    ) -> Option<Vec<TargetOs>> {
+        let Some(value) = table.get("TargetOS") else {
+            return Some(Vec::new());
+        };
+        let Some(array) = value.as_array() else {
+            self.wrong_type_owned(
+                vec![
+                    "Dependencies".to_owned(),
+                    alias_source.to_owned(),
+                    "TargetOS".to_owned(),
+                ],
+                value.span(),
+                "an array of strings",
+            );
+            return None;
+        };
+        if array.is_empty() {
+            self.push_owned(
+                ManifestErrorCode::EmptyValue,
+                vec![
+                    "Dependencies".to_owned(),
+                    alias_source.to_owned(),
+                    "TargetOS".to_owned(),
+                ],
+                value.span(),
+                "TargetOS cannot be empty; omit it to match every target",
+            );
+            return None;
+        }
+
+        let mut result = Vec::with_capacity(array.len());
+        let mut seen = BTreeSet::new();
+        let mut valid = true;
+        for (index, item) in array.iter().enumerate() {
+            let item_path = vec![
+                "Dependencies".to_owned(),
+                alias_source.to_owned(),
+                "TargetOS".to_owned(),
+                index.to_string(),
+            ];
+            let Some(name) = item.as_str() else {
+                self.wrong_type_owned(item_path, item.span(), "a string");
+                valid = false;
+                continue;
+            };
+            let Some(target) = TargetOs::parse(name) else {
+                self.push_owned(
+                    ManifestErrorCode::InvalidTargetOs,
+                    item_path,
+                    item.span(),
+                    format!("unsupported TargetOS '{name}'"),
+                );
+                valid = false;
+                continue;
+            };
+            if !seen.insert(target) {
+                self.push_owned(
+                    ManifestErrorCode::NormalizedCollision,
+                    item_path,
+                    item.span(),
+                    format!("TargetOS '{name}' is duplicated"),
+                );
+                valid = false;
+                continue;
+            }
+            result.push(target);
+        }
+        valid.then_some(result)
     }
 
     fn parse_build(&mut self, item: &Item) -> Option<BuildConfiguration> {

@@ -1,4 +1,4 @@
-use rux_domain::SemanticVersion;
+use rux_domain::{SemanticVersion, TargetOs};
 use rux_manifest::{
     BuildMode, DefineValue, DependencySource, MANIFEST_MAX_BYTES, ManifestErrorCode, ManifestKind,
     ManifestPath, Optimization, PackageType, ValidationProfile, parse_manifest,
@@ -90,6 +90,7 @@ Channel = "Stable"
     assert_eq!(dependencies[1].0.normalized(), "jsonalias");
     assert_eq!(dependencies[2].0.normalized(), "localutil");
     assert_eq!(dependencies[0].1.package().as_str(), "Io");
+    assert!(dependencies[0].1.target_os().is_empty());
     assert!(
         matches!(dependencies[0].1.source(), DependencySource::Registry { namespace, version } if namespace.as_str() == "Rux" && version.as_str() == "^1.0")
     );
@@ -355,6 +356,59 @@ Mixed = {{ Namespace = "Rux", Version = "1", Path = "../Mixed" }}
             ManifestErrorCode::InvalidDependencySource,
         ]
     );
+}
+
+#[test]
+fn dependency_target_operating_systems_are_exact_nonempty_unique_lists() {
+    let accepted = format!(
+        r#"{HEADER}
+[Package]
+Name = "Example"
+Version = "1.0.0"
+Type = "Source"
+
+[Dependencies]
+Platform = {{ Path = "../Platform", TargetOS = ["Windows", "Linux", "MacOS", "FreeBSD", "OpenBSD", "NetBSD", "DragonFlyBSD", "Illumos"] }}
+"#
+    );
+    let manifest = parse_manifest(&accepted).expect("supported TargetOS values should parse");
+    let ManifestKind::Package(package) = manifest.kind() else {
+        panic!("expected package manifest");
+    };
+    assert_eq!(
+        package
+            .dependencies()
+            .values()
+            .next()
+            .expect("platform dependency")
+            .target_os(),
+        &[
+            TargetOs::Windows,
+            TargetOs::Linux,
+            TargetOs::MacOs,
+            TargetOs::FreeBsd,
+            TargetOs::OpenBsd,
+            TargetOs::NetBsd,
+            TargetOs::DragonFlyBsd,
+            TargetOs::Illumos,
+        ]
+    );
+
+    for (value, expected) in [
+        ("[]", ManifestErrorCode::EmptyValue),
+        (
+            "[\"Windows\", \"Windows\"]",
+            ManifestErrorCode::NormalizedCollision,
+        ),
+        ("[\"macOS\"]", ManifestErrorCode::InvalidTargetOs),
+        ("\"Windows\"", ManifestErrorCode::WrongType),
+        ("[1]", ManifestErrorCode::WrongType),
+    ] {
+        let source = format!(
+            "{HEADER}\n[Package]\nName = \"Example\"\nVersion = \"1.0.0\"\nType = \"Source\"\n\n[Dependencies]\nPlatform = {{ Path = \"../Platform\", TargetOS = {value} }}\n"
+        );
+        assert_eq!(codes(&source), vec![expected]);
+    }
 }
 
 #[test]

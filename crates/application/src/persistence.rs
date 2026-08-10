@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 
 use async_trait::async_trait;
-use rux_domain::{IdentitySegment, SemanticVersion, VersionRange};
+use rux_domain::{IdentitySegment, SemanticVersion, TargetOs, VersionRange};
 use serde_json::{Map, Value};
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
@@ -248,6 +248,7 @@ pub struct DependencyRecord {
     pub target_namespace: IdentitySegment,
     pub target_package: IdentitySegment,
     pub version_range: VersionRange,
+    pub target_os: Vec<TargetOs>,
 }
 
 #[derive(Clone, Debug)]

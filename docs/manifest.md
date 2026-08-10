@@ -25,8 +25,8 @@ ReadmeFile = "README.md"
 
 [Dependencies]
 Io = { Namespace = "Rux", Version = "^1.0" }
-Json = { Namespace = "Acme", Package = "FastJson", Version = "2" }
-LocalUtil = { Package = "Util", Path = "../Util" }
+Json = { Namespace = "Acme", Package = "FastJson", Version = "2", TargetOS = ["Linux", "MacOS"] }
+LocalUtil = { Package = "Util", Path = "../Util", TargetOS = ["Windows"] }
 
 [Build]
 Output = "Bin"
@@ -67,6 +67,8 @@ Manifest v1 has no separate `SharedLibrary` type because `Library` already denot
 `License` is a strict SPDX expression and `LicenseFile` is a package-relative path to the licence text in the archive. The two are independent: a package may set either, both, or neither. A field whose name ends in `File` always names an archive entry, so `ReadmeFile` and `LicenseFile` share one path contract. Repository and homepage values are absolute HTTP or HTTPS URLs with a host and without credentials. Keywords use identity-segment syntax and cannot collide after normalization.
 
 Each dependency key is the local import alias and each value is an inline table. A registry dependency requires `Namespace` and `Version`; `Package` defaults to the alias. A path dependency requires `Path`, may override `Package`, and cannot contain `Namespace` or `Version`. Path dependencies are valid locally but rejected by the publication profile.
+
+Both dependency forms may include a non-empty, duplicate-free `TargetOS` allow-list. Supported values are exactly `Windows`, `Linux`, `MacOS`, `FreeBSD`, `OpenBSD`, `NetBSD`, `DragonFlyBSD`, and `Illumos`. Omitting `TargetOS` makes the dependency unconditional. Publication preserves the condition in normalized manifest metadata and registry dependency edges.
 
 ## Workspace manifest
 

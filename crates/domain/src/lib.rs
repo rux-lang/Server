@@ -1,9 +1,11 @@
 #![doc = "Core domain rules for the Rux package registry."]
 
 mod identity;
+mod target;
 mod version;
 
 pub use identity::{IDENTITY_SEGMENT_MAX_LENGTH, IdentitySegment, IdentitySegmentError};
+pub use target::TargetOs;
 pub use version::{
     SemanticVersion, SemanticVersionError, VERSION_RANGE_MAX_COMPARATORS, VersionRange,
     VersionRangeError,

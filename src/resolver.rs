@@ -55,6 +55,8 @@ pub(crate) struct ResolverDependencyDocument {
     target_namespace: String,
     target_package: String,
     version_range: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_os: Option<Vec<String>>,
 }
 
 #[utoipa::path(
@@ -129,6 +131,13 @@ fn dependency_document(dependency: &DependencyRecord) -> ResolverDependencyDocum
         target_namespace: dependency.target_namespace.as_str().to_owned(),
         target_package: dependency.target_package.as_str().to_owned(),
         version_range: dependency.version_range.as_str().to_owned(),
+        target_os: (!dependency.target_os.is_empty()).then(|| {
+            dependency
+                .target_os
+                .iter()
+                .map(|target| target.as_str().to_owned())
+                .collect()
+        }),
     }
 }
 
@@ -286,8 +295,8 @@ mod tests {
     use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, ETAG, IF_NONE_MATCH};
     use axum::http::{Request, StatusCode};
     use rux_application::{ResolverIndexError, ResolverIndexRecord, ResolverVersionRecord};
-    use rux_domain::{IdentitySegment, SemanticVersion, VersionRange};
-    use serde_json::Value;
+    use rux_domain::{IdentitySegment, SemanticVersion, TargetOs, VersionRange};
+    use serde_json::{Value, json};
     use tower::ServiceExt;
 
     use super::*;
@@ -336,6 +345,10 @@ mod tests {
         assert_eq!(
             document["data"]["versions"][0]["dependencies"][0]["version_range"],
             "^1"
+        );
+        assert_eq!(
+            document["data"]["versions"][0]["dependencies"][0]["target_os"],
+            json!(["Windows", "Linux"])
         );
     }
 
@@ -467,6 +480,7 @@ mod tests {
                     target_namespace: identity("Rux"),
                     target_package: identity("Json"),
                     version_range: VersionRange::new("^1").expect("valid range fixture"),
+                    target_os: vec![TargetOs::Windows, TargetOs::Linux],
                 }],
             }],
         }

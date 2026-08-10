@@ -144,7 +144,7 @@ Malformed multipart requests, invalid artifact diagnostics, authentication and s
 
 Package metadata is public and unauthenticated. `GET /v1/packages/{namespace}/{package}` returns the version-independent package identity, package creation time, and canonical package URL. It deliberately does not select a representative release or return version history. Namespace and package lookups use normalized identities while the response preserves the stored display spelling.
 
-`GET /v1/packages/{namespace}/{package}/{version}` returns one exact strict Semantic Version, including build metadata. It exposes the stored normalized manifest; package type, minimum Rux version, description, authors, keywords, catalog URLs, and dependencies; raw referenced README source; license data; the artifact SHA-256 and bounded artifact/source metrics; publication time; and current yank state. Dependencies are ordered by normalized alias. Authors and keywords retain manifest order.
+`GET /v1/packages/{namespace}/{package}/{version}` returns one exact strict Semantic Version, including build metadata. It exposes the stored normalized manifest; package type, minimum Rux version, description, authors, keywords, catalog URLs, and dependencies; raw referenced README source; license data; the artifact SHA-256 and bounded artifact/source metrics; publication time; and current yank state. Dependencies are ordered by normalized alias. A dependency's optional `target_os` is an ordered array of exact manifest OS names; omission means the edge is unconditional. Authors and keywords retain manifest order.
 
 `readme_file` and `license_file` are each either `null` or an object containing `path` and unrendered UTF-8 `source`. `license` is either `null` or the SPDX expression as a string, and is independent of `license_file` — a release may carry either, both, or neither:
 
@@ -200,7 +200,7 @@ Invalid namespace, package, and version values return `invalid_request` with a s
 
 `GET /v1/index/{namespace}/{package}` is an unauthenticated machine-facing index for dependency resolution. Namespace and package path segments use the registry identity syntax and are matched by normalized identity; the response preserves the stored display spelling. Invalid segments return `invalid_request`, an unknown package returns `package_not_found`, and database failures return `resolver_index_unavailable` without exposing internal details.
 
-The response contains versions in ascending registry semantic-version order. That total order follows SemVer precedence and uses build metadata as the deterministic tie-breaker. Each version contains its exact version, minimum Rux version, current `yanked` flag, and dependencies ordered by normalized alias. Dependencies contain their display alias, target namespace and package, and original validated version range. Yanked versions remain in the index so an existing lock can identify them, while clients must avoid selecting them for a new resolution. Artifact checksums and broader version metadata are provided by the exact-version metadata contract rather than duplicated here.
+The response contains versions in ascending registry semantic-version order. That total order follows SemVer precedence and uses build metadata as the deterministic tie-breaker. Each version contains its exact version, minimum Rux version, current `yanked` flag, and dependencies ordered by normalized alias. Dependencies contain their display alias, target namespace and package, original validated version range, and an optional `target_os` allow-list. A missing `target_os` means the dependency applies to every target. A present value contains one or more unique exact names from `Windows`, `Linux`, `MacOS`, `FreeBSD`, `OpenBSD`, `NetBSD`, `DragonFlyBSD`, and `Illumos`; clients must reject malformed or empty values rather than resolving an untrusted index. Yanked versions remain in the index so an existing lock can identify them, while clients must avoid selecting them for a new resolution. Artifact checksums and broader version metadata are provided by the exact-version metadata contract rather than duplicated here.
 
 ```json
 {
@@ -217,7 +217,8 @@ The response contains versions in ascending registry semantic-version order. Tha
             "alias": "Json",
             "target_namespace": "Rux",
             "target_package": "Json",
-            "version_range": "^1"
+            "version_range": "^1",
+            "target_os": ["Windows"]
           }
         ]
       }
@@ -273,7 +274,7 @@ Under the default ordering with `q`, results are ordered by exact qualified iden
 
 Discovery reads are public and unauthenticated. Except for highlights and keywords, each collection uses an opaque versioned keyset cursor and returns `{"data": [...], "meta": {"next_cursor": null}}`. Unknown, repeated, malformed, or out-of-range query parameters return `invalid_request`. Ordinary discovery limits default to 20 and are bounded from 1 through 100. Sitemap limits default to 100 and are bounded from 1 through 1,000. A cursor is bound to its collection and, for package-scoped reads, its normalized package identity. Cursor kind `2` is retired — it belonged to the keyword index before it moved to page numbers — and is never reissued.
 
-`GET /v1/packages/{namespace}/{package}/dependents` lists one row per package whose representative version declares the requested target. Representative selection matches search: highest active stable, then active prerelease, then a yanked stable-first fallback. Multiple aliases targeting the same package are grouped into ordered `requirements` containing the display alias and original version range. Results are ordered by normalized dependent namespace and package. A missing target returns `package_not_found`.
+`GET /v1/packages/{namespace}/{package}/dependents` lists one row per package whose representative version declares the requested target. Representative selection matches search: highest active stable, then active prerelease, then a yanked stable-first fallback. Multiple aliases targeting the same package are grouped into ordered `requirements` containing the display alias, original version range, and optional `target_os` allow-list. Results are ordered by normalized dependent namespace and package. A missing target returns `package_not_found`.
 
 `GET /v1/keywords` aggregates the representative versions' keywords. Each row contains display and normalized spelling plus the number of distinct packages. The newest representative publication supplies display spelling, with package identity as the deterministic tie-breaker.
 

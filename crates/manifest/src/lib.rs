@@ -11,7 +11,7 @@ pub use model::{
     Optimization, PackageManifest, PackageType, WebUrl, WorkspaceManifest,
 };
 pub use parser::{ValidationProfile, parse_manifest, parse_manifest_with_profile};
-pub use rux_domain::MANIFEST_VERSION;
+pub use rux_domain::{MANIFEST_VERSION, TargetOs};
 
 /// Earliest Rux compiler release that understands manifest schema v1.
 pub const MANIFEST_MIN_RUX_VERSION: &str = "0.4.0";

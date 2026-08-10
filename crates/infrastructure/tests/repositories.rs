@@ -11,7 +11,7 @@ use rux_application::{
     ResolverIndexReader, SecretHash, TokenReader, TokenScope, UnitOfWork, WriteOutcome,
     YankErrorKind, YankService, Yanks,
 };
-use rux_domain::{IdentitySegment, SemanticVersion, VersionRange};
+use rux_domain::{IdentitySegment, SemanticVersion, TargetOs, VersionRange};
 use rux_infrastructure::{OsCredentialGenerator, PostgresRepository, SystemClock};
 use serde_json::{Map, Value};
 use sqlx::{PgPool, query_scalar};
@@ -345,6 +345,7 @@ async fn complete_package_version_aggregate_round_trips(pool: PgPool) -> TestRes
     assert_eq!(stored.authors, vec!["Rux Contributors", "Registry Team"]);
     assert_eq!(stored.keywords[0].as_str(), "Registry_Tools");
     assert_eq!(stored.dependencies[0].alias.as_str(), "Alpha");
+    assert_eq!(stored.dependencies[0].target_os, vec![TargetOs::Windows]);
     assert_eq!(stored.artifact_sha256, ArtifactSha256::new([4; 32]));
     let summary = repository
         .package_summary_by_name(&identity("rux"), &identity("example-pkg"))
@@ -858,6 +859,10 @@ fn dependency(alias: &str, namespace: &str, package: &str, range: &str) -> Depen
         target_namespace: identity(namespace),
         target_package: identity(package),
         version_range: VersionRange::new(range).expect("valid range fixture"),
+        target_os: (alias == "Alpha")
+            .then_some(TargetOs::Windows)
+            .into_iter()
+            .collect(),
     }
 }
 

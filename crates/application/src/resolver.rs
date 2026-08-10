@@ -206,6 +206,7 @@ mod tests {
             target_namespace: identity("Rux"),
             target_package: identity(alias),
             version_range: VersionRange::new("^1").expect("valid range fixture"),
+            target_os: Vec::new(),
         }
     }
 
