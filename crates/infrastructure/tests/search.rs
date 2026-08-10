@@ -1,7 +1,9 @@
 use std::error::Error;
 use uuid::Uuid;
 
-use rux_application::{PackageKind, PackageSearchCriteria, PackageSearchReader, PackageSortOrder};
+use rux_application::{
+    PackageKind, PackageSearchCriteria, PackageSearchReader, PackageSortDirection, PackageSortOrder,
+};
 use rux_domain::{IdentitySegment, SemanticVersion};
 use rux_infrastructure::PostgresRepository;
 use sqlx::{PgPool, query, query_scalar};
@@ -149,6 +151,7 @@ async fn search_ranks_literal_signals_and_filters_representative_metadata(
                 keyword: Some(identity("json")),
                 package_type: Some(PackageKind::Source),
                 sort: PackageSortOrder::Name,
+                order: PackageSortDirection::Ascending,
             },
             1,
             10,
@@ -190,6 +193,25 @@ async fn offset_pages_cover_every_row_once_and_report_the_full_total(pool: PgPoo
         ["Alpha", "Beta", "Gamma"]
     );
 
+    let descending = repository
+        .search_packages(
+            &PackageSearchCriteria {
+                order: PackageSortDirection::Descending,
+                ..browse()
+            },
+            1,
+            3,
+        )
+        .await?;
+    assert_eq!(
+        descending
+            .items
+            .iter()
+            .map(|record| record.package.as_str())
+            .collect::<Vec<_>>(),
+        ["Gamma", "Beta", "Alpha"]
+    );
+
     // A page past the end is empty rather than an error, and carries no total
     // of its own because the window count rides on the rows.
     let past_end = repository.search_packages(&browse(), 9, 2).await?;
@@ -210,10 +232,38 @@ async fn sort_orders_select_download_counts_and_recency(pool: PgPool) -> TestRes
     add_downloads(&pool, alpha, 1, 0).await?;
     add_downloads(&pool, beta, 4, 0).await?;
 
-    let by_total = packages_sorted(&repository, PackageSortOrder::Downloads).await?;
+    let by_total = packages_sorted(
+        &repository,
+        PackageSortOrder::Downloads,
+        PackageSortDirection::Descending,
+    )
+    .await?;
     assert_eq!(by_total, ["Alpha", "Beta", "Gamma"]);
-    let by_recent = packages_sorted(&repository, PackageSortOrder::RecentDownloads).await?;
+    assert_eq!(
+        packages_sorted(
+            &repository,
+            PackageSortOrder::Downloads,
+            PackageSortDirection::Ascending,
+        )
+        .await?,
+        ["Gamma", "Beta", "Alpha"]
+    );
+    let by_recent = packages_sorted(
+        &repository,
+        PackageSortOrder::RecentDownloads,
+        PackageSortDirection::Descending,
+    )
+    .await?;
     assert_eq!(by_recent, ["Beta", "Alpha", "Gamma"]);
+    assert_eq!(
+        packages_sorted(
+            &repository,
+            PackageSortOrder::RecentDownloads,
+            PackageSortDirection::Ascending,
+        )
+        .await?,
+        ["Gamma", "Alpha", "Beta"]
+    );
 
     let counts = repository
         .search_packages(&browse(), 1, 10)
@@ -251,12 +301,40 @@ async fn created_and_updated_sorts_use_distinct_timestamps(pool: PgPool) -> Test
     insert_version_published(&pool, beta, "1.0.0", PackageKind::Source, None, false, 5).await?;
 
     assert_eq!(
-        packages_sorted(&repository, PackageSortOrder::Created).await?,
+        packages_sorted(
+            &repository,
+            PackageSortOrder::Created,
+            PackageSortDirection::Descending,
+        )
+        .await?,
         ["Beta", "Alpha"]
     );
     assert_eq!(
-        packages_sorted(&repository, PackageSortOrder::Updated).await?,
+        packages_sorted(
+            &repository,
+            PackageSortOrder::Updated,
+            PackageSortDirection::Descending,
+        )
+        .await?,
         ["Alpha", "Beta"]
+    );
+    assert_eq!(
+        packages_sorted(
+            &repository,
+            PackageSortOrder::Created,
+            PackageSortDirection::Ascending,
+        )
+        .await?,
+        ["Alpha", "Beta"]
+    );
+    assert_eq!(
+        packages_sorted(
+            &repository,
+            PackageSortOrder::Updated,
+            PackageSortDirection::Ascending,
+        )
+        .await?,
+        ["Beta", "Alpha"]
     );
     Ok(())
 }
@@ -269,6 +347,7 @@ fn browse() -> PackageSearchCriteria {
         keyword: None,
         package_type: None,
         sort: PackageSortOrder::Name,
+        order: PackageSortDirection::Ascending,
     }
 }
 
@@ -277,6 +356,7 @@ fn query_criteria(query: &str) -> PackageSearchCriteria {
         query: Some(query.into()),
         identity_query: Some(query.to_lowercase().replace('_', "-")),
         sort: PackageSortOrder::Relevance,
+        order: PackageSortDirection::Descending,
         ..browse()
     }
 }
@@ -284,9 +364,18 @@ fn query_criteria(query: &str) -> PackageSearchCriteria {
 async fn packages_sorted(
     repository: &PostgresRepository,
     sort: PackageSortOrder,
+    order: PackageSortDirection,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     Ok(repository
-        .search_packages(&PackageSearchCriteria { sort, ..browse() }, 1, 10)
+        .search_packages(
+            &PackageSearchCriteria {
+                sort,
+                order,
+                ..browse()
+            },
+            1,
+            10,
+        )
         .await?
         .items
         .into_iter()

@@ -373,6 +373,7 @@ pub struct PackageSearchCriteria {
     pub keyword: Option<IdentitySegment>,
     pub package_type: Option<PackageKind>,
     pub sort: PackageSortOrder,
+    pub order: PackageSortDirection,
 }
 
 /// The result ordering a catalog request asks for.
@@ -389,6 +390,13 @@ pub enum PackageSortOrder {
     RecentDownloads,
     Updated,
     Created,
+}
+
+/// The direction applied to a package-search ordering.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageSortDirection {
+    Ascending,
+    Descending,
 }
 
 #[derive(Clone, Debug)]

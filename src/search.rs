@@ -42,6 +42,9 @@ pub(crate) struct SearchQuery {
     /// `relevance`, `name`, `downloads`, `recent_downloads`, `updated`, or
     /// `created`. Defaults to `relevance` when `q` is present, `name` otherwise.
     sort: Option<String>,
+    /// `asc` or `desc`. Defaults to `asc` for `name` and `desc` for every other
+    /// ordering. Relevance only supports `desc`.
+    order: Option<String>,
     #[param(minimum = 1, maximum = 10000, default = 1)]
     page: Option<u32>,
     #[param(minimum = 1, maximum = 100, default = 20)]
@@ -116,6 +119,7 @@ pub(crate) async fn search_packages(
         keyword: query.keyword,
         package_type: query.package_type,
         sort: query.sort,
+        order: query.order,
         page: query.page,
         per_page: query.per_page.or(query.limit),
     };
@@ -213,6 +217,11 @@ fn search_problem(kind: PackageSearchErrorKind, page_size_pointer: &str) -> Prob
             "must be relevance, name, downloads, recent_downloads, updated, or created",
             Some("/sort"),
         ),
+        PackageSearchErrorKind::InvalidOrder => invalid_parameter(
+            "invalid_order",
+            "must be asc or desc; relevance only supports desc",
+            Some("/order"),
+        ),
         PackageSearchErrorKind::InvalidPage => invalid_parameter(
             "invalid_page",
             "must be an integer from 1 through 10000",
@@ -309,10 +318,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sort_and_the_deprecated_limit_alias_are_accepted() {
+    async fn sort_order_and_the_deprecated_limit_alias_are_accepted() {
         for uri in [
             "/v1/search?sort=downloads",
             "/v1/search?sort=recent_downloads",
+            "/v1/search?sort=name&order=desc",
             "/v1/search?limit=1",
         ] {
             let response = test_router(None).oneshot(request(uri)).await.unwrap();
@@ -348,6 +358,14 @@ mod tests {
         assert_eq!(problem["code"], "invalid_request");
         assert_eq!(problem["errors"][0]["code"], "invalid_sort");
         assert_eq!(problem["errors"][0]["pointer"], "/sort");
+
+        let order = test_router(Some(PackageSearchErrorKind::InvalidOrder))
+            .oneshot(request("/v1/search?order=sideways"))
+            .await
+            .unwrap();
+        let problem = response_json(order).await;
+        assert_eq!(problem["errors"][0]["code"], "invalid_order");
+        assert_eq!(problem["errors"][0]["pointer"], "/order");
 
         let page = test_router(Some(PackageSearchErrorKind::InvalidPage))
             .oneshot(request("/v1/search?page=0"))

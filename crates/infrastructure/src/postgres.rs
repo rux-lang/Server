@@ -15,12 +15,13 @@ use rux_application::{
     PackageDownloadDayRecord, PackageDownloadStatisticsRecord, PackageHighlightsRecord, PackageId,
     PackageIdentityBoundary, PackageKind, PackageMetadataReader, PackageRecord,
     PackageSearchCriteria, PackageSearchPageRecord, PackageSearchReader, PackageSearchRecord,
-    PackageSortOrder, PackageSummaryRecord, PackageVersionHistoryRecord, PackageVersionId,
-    PackageVersionMetadataRecord, PackageVersionRecord, RegistryTransaction, RepositoryConflict,
-    RepositoryError, RepositoryErrorKind, ResolverIndexReader, ResolverIndexRecord,
-    ResolverVersionRecord, SecretHash, SessionId, SessionRecord, SitemapBoundary, SitemapEntryKind,
-    SitemapEntryRecord, TokenAuthorizationTransaction, TokenReader, TokenScope, TokenTransaction,
-    TokenUnitOfWork, TokenWriter, TransactionReader, UnitOfWork, UserId, UserRecord, WriteOutcome,
+    PackageSortDirection, PackageSortOrder, PackageSummaryRecord, PackageVersionHistoryRecord,
+    PackageVersionId, PackageVersionMetadataRecord, PackageVersionRecord, RegistryTransaction,
+    RepositoryConflict, RepositoryError, RepositoryErrorKind, ResolverIndexReader,
+    ResolverIndexRecord, ResolverVersionRecord, SecretHash, SessionId, SessionRecord,
+    SitemapBoundary, SitemapEntryKind, SitemapEntryRecord, TokenAuthorizationTransaction,
+    TokenReader, TokenScope, TokenTransaction, TokenUnitOfWork, TokenWriter, TransactionReader,
+    UnitOfWork, UserId, UserRecord, WriteOutcome,
 };
 use rux_domain::{IdentitySegment, SemanticVersion, TargetOs, VersionRange};
 use serde_json::Value;
@@ -1523,7 +1524,7 @@ impl PackageSearchReader for PostgresRepository {
         let offset = i64::from(page - 1) * i64::from(per_page);
         let sql = format!(
             "{PACKAGE_SEARCH_SQL}{} LIMIT $8 OFFSET $9",
-            package_sort_clause(criteria.sort)
+            package_sort_clause(criteria.sort, criteria.order)
         );
         let rows = query_as::<_, PackageSearchRow>(&sql)
             .bind(criteria.query.as_deref())
@@ -1570,23 +1571,43 @@ const fn keyword_sort_clause(sort: KeywordSortOrder) -> &'static str {
 /// Every variant ends with the normalized-name tiebreak so the ordering is
 /// total; without it two packages with equal download counts could swap places
 /// between requests and appear twice, or not at all, across pages.
-const fn package_sort_clause(sort: PackageSortOrder) -> &'static str {
-    match sort {
-        PackageSortOrder::Relevance => {
+fn package_sort_clause(sort: PackageSortOrder, order: PackageSortDirection) -> &'static str {
+    match (sort, order) {
+        (PackageSortOrder::Relevance, PackageSortDirection::Descending) => {
             " ORDER BY match_class DESC, relevance DESC, namespace_normalized_name, package_normalized_name"
         }
-        PackageSortOrder::Name => " ORDER BY namespace_normalized_name, package_normalized_name",
-        PackageSortOrder::Downloads => {
+        (PackageSortOrder::Name, PackageSortDirection::Ascending) => {
+            " ORDER BY namespace_normalized_name, package_normalized_name"
+        }
+        (PackageSortOrder::Name, PackageSortDirection::Descending) => {
+            " ORDER BY namespace_normalized_name DESC, package_normalized_name DESC"
+        }
+        (PackageSortOrder::Downloads, PackageSortDirection::Descending) => {
             " ORDER BY downloads_total DESC, namespace_normalized_name, package_normalized_name"
         }
-        PackageSortOrder::RecentDownloads => {
+        (PackageSortOrder::Downloads, PackageSortDirection::Ascending) => {
+            " ORDER BY downloads_total, namespace_normalized_name, package_normalized_name"
+        }
+        (PackageSortOrder::RecentDownloads, PackageSortDirection::Descending) => {
             " ORDER BY downloads_30d DESC, namespace_normalized_name, package_normalized_name"
         }
-        PackageSortOrder::Updated => {
+        (PackageSortOrder::RecentDownloads, PackageSortDirection::Ascending) => {
+            " ORDER BY downloads_30d, namespace_normalized_name, package_normalized_name"
+        }
+        (PackageSortOrder::Updated, PackageSortDirection::Descending) => {
             " ORDER BY published_at DESC, namespace_normalized_name, package_normalized_name"
         }
-        PackageSortOrder::Created => {
+        (PackageSortOrder::Updated, PackageSortDirection::Ascending) => {
+            " ORDER BY published_at, namespace_normalized_name, package_normalized_name"
+        }
+        (PackageSortOrder::Created, PackageSortDirection::Descending) => {
             " ORDER BY package_created_at DESC, namespace_normalized_name, package_normalized_name"
+        }
+        (PackageSortOrder::Created, PackageSortDirection::Ascending) => {
+            " ORDER BY package_created_at, namespace_normalized_name, package_normalized_name"
+        }
+        (PackageSortOrder::Relevance, PackageSortDirection::Ascending) => {
+            unreachable!("ascending relevance is rejected by the application service")
         }
     }
 }

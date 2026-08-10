@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use rux_domain::IdentitySegment;
 
 use crate::{
-    PackageKind, PackageSearchCriteria, PackageSearchReader, PackageSearchRecord, PackageSortOrder,
+    PackageKind, PackageSearchCriteria, PackageSearchReader, PackageSearchRecord,
+    PackageSortDirection, PackageSortOrder,
 };
 
 pub const DEFAULT_SEARCH_PAGE_SIZE: u16 = 20;
@@ -26,6 +27,7 @@ pub struct PackageSearchParameters {
     pub keyword: Option<String>,
     pub package_type: Option<String>,
     pub sort: Option<String>,
+    pub order: Option<String>,
     pub page: Option<u32>,
     pub per_page: Option<u16>,
 }
@@ -45,6 +47,7 @@ pub enum PackageSearchErrorKind {
     InvalidKeyword,
     InvalidPackageType,
     InvalidSort,
+    InvalidOrder,
     InvalidPage,
     InvalidPerPage,
     Unavailable,
@@ -169,6 +172,17 @@ fn criteria(
         } else {
             PackageSortOrder::Name
         });
+    let order = parameters
+        .order
+        .as_deref()
+        .map(parse_order)
+        .transpose()?
+        .unwrap_or_else(|| default_sort_direction(sort));
+    if sort == PackageSortOrder::Relevance && order == PackageSortDirection::Ascending {
+        return Err(PackageSearchError::new(
+            PackageSearchErrorKind::InvalidOrder,
+        ));
+    }
     Ok(PackageSearchCriteria {
         query,
         identity_query,
@@ -176,6 +190,7 @@ fn criteria(
         keyword,
         package_type,
         sort,
+        order,
     })
 }
 
@@ -204,6 +219,27 @@ fn parse_sort(value: &str) -> Result<PackageSortOrder, PackageSearchError> {
         "updated" => Ok(PackageSortOrder::Updated),
         "created" => Ok(PackageSortOrder::Created),
         _ => Err(PackageSearchError::new(PackageSearchErrorKind::InvalidSort)),
+    }
+}
+
+const fn default_sort_direction(sort: PackageSortOrder) -> PackageSortDirection {
+    match sort {
+        PackageSortOrder::Name => PackageSortDirection::Ascending,
+        PackageSortOrder::Relevance
+        | PackageSortOrder::Downloads
+        | PackageSortOrder::RecentDownloads
+        | PackageSortOrder::Updated
+        | PackageSortOrder::Created => PackageSortDirection::Descending,
+    }
+}
+
+fn parse_order(value: &str) -> Result<PackageSortDirection, PackageSearchError> {
+    match value {
+        "asc" => Ok(PackageSortDirection::Ascending),
+        "desc" => Ok(PackageSortDirection::Descending),
+        _ => Err(PackageSearchError::new(
+            PackageSearchErrorKind::InvalidOrder,
+        )),
     }
 }
 
@@ -257,6 +293,7 @@ mod tests {
                 keyword: Some("Data_Formats".into()),
                 package_type: Some("library".into()),
                 sort: Some("downloads".into()),
+                order: Some("asc".into()),
                 page: Some(3),
                 per_page: Some(25),
             })
@@ -275,6 +312,7 @@ mod tests {
         );
         assert_eq!(calls[0].0.package_type, Some(PackageKind::Library));
         assert_eq!(calls[0].0.sort, PackageSortOrder::Downloads);
+        assert_eq!(calls[0].0.order, PackageSortDirection::Ascending);
         assert_eq!(calls[0].1, 3);
         assert_eq!(calls[0].2, 25);
     }
@@ -305,8 +343,11 @@ mod tests {
             .unwrap();
         let calls = reader.calls.lock().unwrap();
         assert_eq!(calls[0].0.sort, PackageSortOrder::Relevance);
+        assert_eq!(calls[0].0.order, PackageSortDirection::Descending);
         assert_eq!(calls[1].0.sort, PackageSortOrder::Name);
+        assert_eq!(calls[1].0.order, PackageSortDirection::Ascending);
         assert_eq!(calls[2].0.sort, PackageSortOrder::Name);
+        assert_eq!(calls[2].0.order, PackageSortDirection::Ascending);
     }
 
     #[tokio::test]
@@ -417,6 +458,27 @@ mod tests {
             assert_eq!(
                 service.search(parameters).await.unwrap_err().kind(),
                 expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn order_validation_rejects_unknown_values_and_ascending_relevance() {
+        let service = PackageSearchService::new(Arc::new(stub(Vec::new())));
+        for parameters in [
+            PackageSearchParameters {
+                order: Some("sideways".into()),
+                ..PackageSearchParameters::default()
+            },
+            PackageSearchParameters {
+                query: Some("json".into()),
+                order: Some("asc".into()),
+                ..PackageSearchParameters::default()
+            },
+        ] {
+            assert_eq!(
+                service.search(parameters).await.unwrap_err().kind(),
+                PackageSearchErrorKind::InvalidOrder
             );
         }
     }
