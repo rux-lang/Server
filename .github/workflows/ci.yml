@@ -50,7 +50,7 @@ jobs:
       - name: Install Rust
         run: rustup show
       - name: Cache Cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -75,7 +75,7 @@ jobs:
       - name: Check out
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
           cache: pip
@@ -126,7 +126,7 @@ jobs:
       - name: Install Rust
         run: rustup show
       - name: Cache Cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -143,9 +143,11 @@ jobs:
           cargo run -p rux-performance -- seed smoke > .performance/results/seed.json
           cargo run -p rux-performance -- fixtures smoke .performance/fixtures "ci-${GITHUB_RUN_ID}" > .performance/results/fixtures.json
           cargo run -p rux-performance -- size smoke > .performance/results/database-size.json
+      - name: Build release API
+        run: cargo build -p rux-server --release
       - name: Start release API
         run: |
-          cargo run -p rux-server --release > .performance/api.log 2>&1 &
+          target/release/rux-server > .performance/api.log 2>&1 &
           echo $! > .performance/api.pid
           for attempt in {1..60}; do
             if curl --fail --silent http://127.0.0.1:8080/health/ready >/dev/null; then
@@ -174,7 +176,7 @@ jobs:
             /scripts/publication.js
       - name: Upload performance evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: registry-performance-smoke
           path: |
@@ -340,7 +342,7 @@ jobs:
             | grep '"uid":"rux-server-overview"'
       - name: Upload API log
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: smoke-api-log
           path: api.log
@@ -348,7 +350,7 @@ jobs:
           retention-days: 7
       - name: Upload playground broker log
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: smoke-playgroundd-log
           path: playgroundd.log
