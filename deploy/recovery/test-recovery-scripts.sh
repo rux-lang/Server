@@ -16,7 +16,7 @@ chmod +x "$test_directory/bin/pgbackrest"
 
 RUX_BACKUP_METRICS_DIRECTORY="$test_directory/metrics" \
 RUX_PGBACKREST_COMMAND="$test_directory/bin/pgbackrest" \
-  "$script_directory/run-pgbackrest.sh" backup full
+  bash "$script_directory/run-pgbackrest.sh" backup full
 grep -F 'rux_postgres_backup_last_run_success{type="full"} 1' \
   "$test_directory/metrics/rux-postgres-backup-full.prom"
 successful_timestamp=$(awk '/last_success_unixtime_seconds/ && $1 !~ /^#/ {print $2}' \
@@ -25,7 +25,7 @@ successful_timestamp=$(awk '/last_success_unixtime_seconds/ && $1 !~ /^#/ {print
 if RUX_TEST_PGBACKREST_FAIL=true \
   RUX_BACKUP_METRICS_DIRECTORY="$test_directory/metrics" \
   RUX_PGBACKREST_COMMAND="$test_directory/bin/pgbackrest" \
-  "$script_directory/run-pgbackrest.sh" backup full; then
+  bash "$script_directory/run-pgbackrest.sh" backup full; then
   echo "a failed pgBackRest command unexpectedly succeeded" >&2
   exit 1
 fi
@@ -43,15 +43,15 @@ touch --date='2 minutes ago' "$test_directory/postgres/pg_wal/archive_status/000
 RUX_BACKUP_METRICS_DIRECTORY="$test_directory/metrics" \
 RUX_POSTGRES_DATA_DIRECTORY="$test_directory/postgres" \
 RUX_PSQL_COMMAND="$test_directory/bin/psql" \
-  "$script_directory/collect-postgres-backup-metrics.sh"
+  bash "$script_directory/collect-postgres-backup-metrics.sh"
 grep -F 'rux_postgres_wal_archive_failures_total 2' "$test_directory/metrics/rux-postgres-wal.prom"
 grep -E 'rux_postgres_wal_archive_oldest_pending_seconds [1-9][0-9]*' "$test_directory/metrics/rux-postgres-wal.prom"
 
 RUX_BACKUP_METRICS_DIRECTORY="$test_directory/metrics" \
-  "$script_directory/record-rehearsal.sh" postgresql
+  bash "$script_directory/record-rehearsal.sh" postgresql
 grep -F 'target="postgresql"' "$test_directory/metrics/rux-recovery-rehearsal-postgresql.prom"
 if RUX_BACKUP_METRICS_DIRECTORY="$test_directory/metrics" \
-  "$script_directory/record-rehearsal.sh" invalid >/dev/null 2>&1; then
+  bash "$script_directory/record-rehearsal.sh" invalid >/dev/null 2>&1; then
   echo "an invalid rehearsal target unexpectedly succeeded" >&2
   exit 1
 fi
@@ -105,7 +105,7 @@ RUX_SPACES_STORAGE_KEY=packages/test/1.0.0/artifact.ruxpkg \
 RUX_SPACES_EXPECTED_SHA256="$artifact_sha256" \
 RUX_SPACES_EXPECTED_SIZE="$artifact_size" \
 RUX_RECOVERY_EVIDENCE_DIRECTORY="$test_directory/evidence" \
-  "$script_directory/rehearse-spaces.sh" > "$test_directory/evidence-path"
+  bash "$script_directory/rehearse-spaces.sh" > "$test_directory/evidence-path"
 evidence_file=$(<"$test_directory/evidence-path")
 jq -e '.target == "spaces" and .outcome == "success" and .source_version_id == "source-v1"' \
   "$evidence_file" >/dev/null
