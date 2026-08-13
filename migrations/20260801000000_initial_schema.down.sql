@@ -16,6 +16,7 @@ DROP TABLE users;
 
 DROP FUNCTION enforce_package_version_immutability();
 DROP FUNCTION prevent_row_mutation();
+DROP FUNCTION rux_target_os_list_valid(TEXT[]);
 DROP FUNCTION rux_semver_identifier_sort_key(TEXT, BOOLEAN);
 
 DROP EXTENSION pg_trgm;
