@@ -13,11 +13,11 @@ use rux_application::{
     PlaygroundProfile, PlaygroundResult, PlaygroundRun,
 };
 use serde::{Deserialize, Serialize};
+use tracing::info;
 use utoipa::ToSchema;
 
 use crate::auth::origin_matches;
 use crate::contract::{DataEnvelope, Problem, ProblemResponse, ValidationError};
-use crate::observability::Metrics;
 
 /// Largest accepted request body.
 ///
@@ -30,19 +30,10 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 pub(crate) struct PlaygroundState {
     playground: Arc<dyn PlaygroundExecution>,
     allowed_web_origin: String,
-    metrics: Metrics,
 }
 
 /// Builds the playground routes.
-///
-/// `metrics` is a parameter rather than a layer because the mode and the
-/// outcome of a run are only known inside the handler, and they are the two
-/// labels that make the instrument useful.
-pub fn router(
-    playground: Arc<dyn PlaygroundExecution>,
-    allowed_web_origin: String,
-    metrics: Metrics,
-) -> Router {
+pub fn router(playground: Arc<dyn PlaygroundExecution>, allowed_web_origin: String) -> Router {
     Router::new()
         .route("/v1/playground/run", post(run_playground))
         .route("/v1/playground/limits", get(playground_limits))
@@ -50,7 +41,6 @@ pub fn router(
         .with_state(PlaygroundState {
             playground,
             allowed_web_origin,
-            metrics,
         })
 }
 
@@ -170,9 +160,6 @@ pub(crate) async fn run_playground(
     let run = to_run(payload);
     let mode = mode_label(run.mode);
     let started = Instant::now();
-    // Dropped on every exit path, including a cancelled request, so the
-    // in-flight gauge cannot drift upward.
-    let _in_flight = state.metrics.playground_run_started();
 
     let outcome = state.playground.execute(run).await;
     let label = match &outcome {
@@ -180,9 +167,14 @@ pub(crate) async fn run_playground(
         Ok(_) => "build_failed",
         Err(error) => outcome_label(error.kind()),
     };
-    state
-        .metrics
-        .record_playground_run(mode, label, started.elapsed());
+    // The fixed vocabularies below keep submitted source out of the logs: only
+    // the requested mode and how the run ended are ever recorded.
+    info!(
+        mode,
+        outcome = label,
+        duration_ms = started.elapsed().as_secs_f64() * 1_000.0,
+        "playground run completed"
+    );
 
     match outcome {
         Ok(result) => Json(DataEnvelope::new(run_document(result))).into_response(),
@@ -410,7 +402,7 @@ mod tests {
     }
 
     fn test_router(playground: Arc<dyn PlaygroundExecution>) -> Router {
-        router(playground, ORIGIN_VALUE.to_owned(), Metrics::for_tests())
+        router(playground, ORIGIN_VALUE.to_owned())
     }
 
     fn run_request(body: &str, origin: Option<&str>) -> Request<Body> {

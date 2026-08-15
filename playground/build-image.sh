@@ -45,8 +45,9 @@ tag="rux-playground:${version}"
 
 # --network=host because the build is the one step that needs the network, and
 # the production host denies it to containers on purpose: the firewall's forward
-# chain drops container egress, and deploy/ansible turns the default bridge off
-# entirely. Host networking is the only route left, and it is harmless elsewhere.
+# chain drops container egress, and the daemon is configured with the default
+# bridge off entirely (see docs/deployment.md). Host networking is the only route
+# left there, and it is harmless elsewhere.
 echo "Building ${tag} from Rux ${version}"
 docker build \
     --network=host \

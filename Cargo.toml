@@ -17,11 +17,6 @@ axum.workspace = true
 governor.workspace = true
 http.workspace = true
 ipnet.workspace = true
-opentelemetry.workspace = true
-opentelemetry-otlp.workspace = true
-opentelemetry-prometheus.workspace = true
-opentelemetry_sdk.workspace = true
-prometheus.workspace = true
 rux-application.workspace = true
 rux-artifact.workspace = true
 rux-infrastructure.workspace = true
@@ -36,7 +31,6 @@ tokio.workspace = true
 tower_governor.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
-tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 utoipa.workspace = true
 url.workspace = true
@@ -60,7 +54,6 @@ members = [
   "crates/infrastructure",
   "crates/manifest",
   "crates/sandbox",
-  "tools/performance",
 ]
 resolver = "2"
 
@@ -83,11 +76,6 @@ futures-util = "0.3"
 governor = "0.10"
 http = "1"
 ipnet = "2"
-opentelemetry = { version = "0.32", features = ["metrics", "trace"] }
-opentelemetry-otlp = { version = "0.32", default-features = false, features = ["grpc-tonic", "trace"] }
-opentelemetry-prometheus = "0.32"
-opentelemetry_sdk = { version = "0.32", features = ["metrics", "trace"] }
-prometheus = "0.14"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rux-application = { path = "crates/application" }
@@ -111,7 +99,6 @@ tower = { version = "0.5", features = ["util"] }
 tower_governor = { version = "0.8", default-features = false, features = ["axum"] }
 tower-http = { version = "0.6", features = ["cors", "limit", "request-id", "sensitive-headers", "trace"] }
 tracing = "0.1"
-tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 unicode-casefold = "0.2"
 unicode-normalization = "0.1"

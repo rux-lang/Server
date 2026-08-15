@@ -290,7 +290,7 @@ mod tests {
             assert_eq!(argv[position + 2], expected[1]);
             assert_eq!(argv[position + 3], NONCE);
             // The three limits the entry point enforces in-container. Their
-            // arity is a contract with deploy/playground/run-job.
+            // arity is a contract with playground/run-job.
             assert_eq!(argv[position + 4], "5");
             assert_eq!(argv[position + 5], "3");
             assert_eq!(argv[position + 6], "16384");

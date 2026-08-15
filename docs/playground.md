@@ -2,7 +2,7 @@
 
 The playground compiles and runs a submitted Rux program inside a throwaway container and returns its diagnostics and output. It is anonymous, stores nothing, and is the only part of this server that executes code it did not build. Everything below is the contract: the endpoints, the isolation each run is subject to, and the two-process topology that keeps a compromised run away from the package registry sharing the host.
 
-The playground is optional. When `RUX_PLAYGROUND_ENABLED` is false the router is never merged, so both endpoints answer `404` from the fallback rather than advertising an endpoint that always fails, and no playground metrics are emitted at all. It is disabled by default, and `playground_enabled` in [production provisioning](production-provisioning.md) is the operator's opt-in.
+The playground is optional. When `RUX_PLAYGROUND_ENABLED` is false the router is never merged, so both endpoints answer `404` from the fallback rather than advertising an endpoint that always fails. It is disabled by default, and it is also the only thing in this project that needs Docker at all — a host without a container runtime runs the registry perfectly well. Installing it is an explicit operator step; see [deployment.md](deployment.md).
 
 ## Topology and trust boundary
 
@@ -156,13 +156,15 @@ The nonce is fresh per run and never leaves the host, so a program that prints a
 
 ## Operating the sandbox
 
-**Adding a standard package requires an image rebuild.** The sandbox runs with `--network=none`, so the compiler cannot resolve a dependency at request time; packages are seeded into the image's cache at build time, when the network is still reachable. `playground_packages` names what is seeded and `playground_allowlist` names the `Root:Namespace` imports the broker will honour, and provisioning refuses an allowlist naming a package the image was never seeded with. Adding one means rebuilding the image, rotating `playground_rux_version`, and redeploying.
+The pinned compiler the image carries is **Rux 0.3.0**, SHA-256 `82e654f9ced042dc029220836d1322b208790099627f32efd9d8d600834be5cc`. That pair is the source of truth: CI reads it from `.github/workflows/ci.yml`, and the production host is built against the same values. Change them together.
 
-The image is built by `deploy/playground/build-image.sh <version> <sha256> [packages]`, which refuses to proceed without a checksum: the build downloads a release tarball over the network, and an unverified download is the one step of this design a network attacker could turn into arbitrary code execution inside every subsequent run. It builds with `--network=host`, because the production host denies containers egress on purpose — the firewall's `forward` chain drops it and the Docker daemon is configured with no default bridge at all.
+**Adding a standard package requires an image rebuild.** The sandbox runs with `--network=none`, so the compiler cannot resolve a dependency at request time; packages are seeded into the image's cache at build time, when the network is still reachable. The build's `packages` argument names what is seeded and `RUX_PLAYGROUND_PACKAGES` names the `Root:Namespace` imports the broker will honour — never allowlist a package the image was not seeded with, because the run will simply fail to resolve it. Adding one means rebuilding the image, rotating the pinned version, and redeploying.
 
-`deploy/playground/test-image.sh` exercises the image directly, with no server involved: a syntax error yields diagnostics and a non-zero build status, an infinite loop is killed by the in-container timeout, a fork bomb hits the pid limit, an oversized allocation is OOM-killed, a socket call fails because only loopback exists, and a forged sentinel cannot inject a section.
+The image is built by `playground/build-image.sh <version> <sha256> [packages]`, which refuses to proceed without a checksum: the build downloads a release tarball over the network, and an unverified download is the one step of this design a network attacker could turn into arbitrary code execution inside every subsequent run. It builds with `--network=host`, because the production host denies containers egress on purpose — the firewall's `forward` chain drops it and the Docker daemon is configured with no default bridge at all.
 
-Metrics, alerts, and the failure runbook are documented in [observability](observability.md) and the [alert runbook](observability-runbook.md). The playground's rate-limit tier and its defaults are in [abuse controls](abuse-controls.md). Availability is deliberately absent from `/health/ready`: a stopped sandbox is a degraded playground, not a degraded registry, and must never pull the registry out of rotation.
+`playground/test-image.sh` exercises the image directly, with no server involved: a syntax error yields diagnostics and a non-zero build status, an infinite loop is killed by the in-container timeout, a fork bomb hits the pid limit, an oversized allocation is OOM-killed, a socket call fails because only loopback exists, and a forged sentinel cannot inject a section.
+
+Installing the broker on a host — the service user, the `docker` group boundary, the daemon policy, and the systemd unit — is documented in [deployment.md](deployment.md). The playground's rate-limit tier and its defaults are in [abuse controls](abuse-controls.md). Availability is deliberately absent from `/health/ready`: a stopped sandbox is a degraded playground, not a degraded registry, and must never pull the registry out of rotation. Each run logs its mode, outcome, and duration; submitted source is never logged.
 
 ## Configuration
 

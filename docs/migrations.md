@@ -10,14 +10,14 @@ Use the SQLx CLI release that matches the workspace's SQLx dependency. The curre
 cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features rustls,postgres
 ```
 
-SQLx CLI reads `DATABASE_URL`, while the API reads `RUX_DATABASE_URL`. For the local Compose database, import the repository environment and copy the value for the CLI process:
+SQLx CLI reads `DATABASE_URL`, while the API reads `RUX_DATABASE_URL`. For the local database, import the repository environment and copy the value for the CLI process:
 
 ```powershell
 .\Import-LocalEnv.ps1
 $env:DATABASE_URL = $env:RUX_DATABASE_URL
 ```
 
-Do not commit a database URL or put a production credential directly in a command. Production automation must provide `DATABASE_URL` through its secret environment.
+Do not commit a database URL or put a production credential directly in a command. In production, source `DATABASE_URL` from the root-owned environment file rather than typing it.
 
 ## Create a migration
 
@@ -82,7 +82,7 @@ The first status check identifies the pending set. `run` applies it and rejects 
 
 Production API code must not run an embedded or filesystem migrator as part of startup or otherwise write SQLx migration state. If the schema is not suitable for a release, startup or readiness may fail, but the process must not repair or advance the schema automatically.
 
-The production [release playbook](releases.md) bundles SQLx CLI 0.8.6 and the exact tagged migration directory. It requires an explicit migration-review confirmation, records migration state before and after `run`, and performs the operation before changing the active application symlink.
+In production this is a deliberate operator step run over SSH with the same pinned SQLx CLI. Review the pending set with `sqlx migrate info` before applying anything, and apply it before starting the new binaries. See [deployment.md](deployment.md).
 
 ## Rollback and recovery policy
 

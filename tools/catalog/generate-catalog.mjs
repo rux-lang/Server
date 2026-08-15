@@ -1,6 +1,5 @@
 /**
- * Generates `deploy/local/local-catalog.sql` from the curated list in
- * `packages.mjs`.
+ * Generates `local-catalog.sql` from the curated list in `packages.mjs`.
  *
  *     node tools/catalog/generate-catalog.mjs
  *
@@ -23,7 +22,7 @@ import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { NAMESPACES, PACKAGES } from "./packages.mjs";
 
-const OUTPUT = fileURLToPath(new URL("../../deploy/local/local-catalog.sql", import.meta.url));
+const OUTPUT = fileURLToPath(new URL("./local-catalog.sql", import.meta.url));
 
 /** Total download rows to distribute across every version, by popularity. */
 const TOTAL_DOWNLOAD_EVENTS = 500_000;

@@ -75,19 +75,17 @@ Owner dashboard activity derives a normalized `namespace_key` from the closed au
 
 ## Local catalog fixtures
 
-After applying migrations to the local Compose database, seed representative catalog metadata with:
+After applying migrations to the local database, seed representative catalog metadata with:
 
 ```powershell
-docker compose --profile tools run --rm catalog-seed
+psql $env:RUX_DATABASE_URL --set=ON_ERROR_STOP=1 --file=tools/catalog/local-catalog.sql
 ```
-
-The opt-in `catalog-seed` service waits for PostgreSQL, runs `deploy/local/local-catalog.sql` with stop-on-error behavior, and removes its one-shot container afterward. The `tools` profile keeps it out of ordinary `docker compose up` runs.
 
 The fixture contains 100 packages across 12 namespaces — `StdLib`, `CommunityTools`, `Acme`, `Northwind`, `Helio`, `Cobalt`, `Ironbark`, `Lumen`, `Meridian`, `Orbit`, `Sentinel`, and `Vantage` — with 2 to 10 releases each. It deliberately leaves `Rux` unused so that namespace stays free to claim by hand when exercising the dashboard. Its 633 versions span executable, shared-library, static-library, and source-library packages and cover prereleases, build-metadata variants, yanked releases, ordered authors and keywords, generated READMEs, license expressions, search text, a dependency graph, and 90 days of download history.
 
 Display names are PascalCase with no separators, so `HttpClient` normalizes to `httpclient`. The `_` → `-` normalization path is still exercised, by the unit fixtures in `src/discovery.rs` rather than by this seed.
 
-`deploy/local/local-catalog.sql` is **generated, not hand-edited**. Regenerate it after changing the curated list in `tools/catalog/packages.mjs`:
+`tools/catalog/local-catalog.sql` is **generated, not hand-edited**. Regenerate it after changing the curated list in `tools/catalog/packages.mjs`:
 
 ```powershell
 node tools/catalog/generate-catalog.mjs

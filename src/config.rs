@@ -21,7 +21,6 @@ pub struct ApiConfig {
     pub infrastructure: InfrastructureConfig,
     pub package_cdn_base_url: Url,
     pub orphan_cleanup: OrphanCleanupConfig,
-    pub observability: ObservabilityConfig,
     pub abuse: AbuseConfig,
     pub uploads: UploadConfig,
     pub playground: PlaygroundConfig,
@@ -50,19 +49,6 @@ pub struct PlaygroundConfig {
 pub struct OrphanCleanupConfig {
     pub interval: StdDuration,
     pub policy: OrphanCleanupPolicy,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TraceExporter {
-    None,
-    Otlp,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct ObservabilityConfig {
-    pub metrics_bind_address: SocketAddr,
-    pub dependency_probe_interval: StdDuration,
-    pub trace_exporter: TraceExporter,
 }
 
 #[derive(Clone, Debug)]
@@ -124,12 +110,6 @@ impl ApiConfig {
                 &value("RUX_ORPHAN_CLEANUP_MIN_AGE_SECONDS", "86400"),
                 &value("RUX_ORPHAN_CLEANUP_SCAN_LIMIT", "1000"),
                 &value("RUX_ORPHAN_CLEANUP_DELETE_LIMIT", "100"),
-            )?,
-            observability: parse_observability(
-                &value("RUX_METRICS_BIND_ADDRESS", "127.0.0.1:9464"),
-                &value("RUX_METRICS_ALLOW_NON_LOOPBACK", "false"),
-                &value("RUX_DEPENDENCY_PROBE_INTERVAL_SECONDS", "15"),
-                &value("OTEL_TRACES_EXPORTER", "none"),
             )?,
             abuse: parse_abuse(
                 &value("RUX_TRUSTED_PROXY_CIDRS", "127.0.0.0/8,::1/128"),
@@ -333,43 +313,6 @@ fn bounded_u64(
         .into());
     }
     Ok(parsed)
-}
-
-fn parse_observability(
-    bind_address: &str,
-    allow_non_loopback: &str,
-    probe_interval_seconds: &str,
-    trace_exporter: &str,
-) -> Result<ObservabilityConfig, Box<dyn std::error::Error>> {
-    let metrics_bind_address: SocketAddr = bind_address.parse()?;
-    let allow_non_loopback: bool = allow_non_loopback.parse()?;
-    if !metrics_bind_address.ip().is_loopback() && !allow_non_loopback {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "RUX_METRICS_BIND_ADDRESS must be loopback unless RUX_METRICS_ALLOW_NON_LOOPBACK=true",
-        )
-        .into());
-    }
-    let dependency_probe_interval = StdDuration::from_secs(positive_u64(
-        "RUX_DEPENDENCY_PROBE_INTERVAL_SECONDS",
-        probe_interval_seconds,
-    )?);
-    let trace_exporter = match trace_exporter.trim().to_ascii_lowercase().as_str() {
-        "" | "none" => TraceExporter::None,
-        "otlp" => TraceExporter::Otlp,
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "OTEL_TRACES_EXPORTER must be none or otlp",
-            )
-            .into());
-        }
-    };
-    Ok(ObservabilityConfig {
-        metrics_bind_address,
-        dependency_probe_interval,
-        trace_exporter,
-    })
 }
 
 fn parse_package_cdn_base_url(value: &str) -> Result<Url, Box<dyn std::error::Error>> {
@@ -577,23 +520,6 @@ mod tests {
         assert!(parse_package_cdn_base_url("https://user@cdn.example.test/").is_err());
         assert!(parse_package_cdn_base_url("https://cdn.example.test/?token=secret").is_err());
         assert!(parse_package_cdn_base_url("https://cdn.example.test/#fragment").is_err());
-    }
-
-    #[test]
-    fn observability_defaults_are_private_and_bounded() {
-        let config = parse_observability("127.0.0.1:9464", "false", "15", "none")
-            .expect("default observability config should parse");
-        assert!(config.metrics_bind_address.ip().is_loopback());
-        assert_eq!(config.dependency_probe_interval, StdDuration::from_secs(15));
-        assert_eq!(config.trace_exporter, TraceExporter::None);
-    }
-
-    #[test]
-    fn observability_requires_an_explicit_non_loopback_override() {
-        assert!(parse_observability("0.0.0.0:9464", "false", "15", "none").is_err());
-        assert!(parse_observability("0.0.0.0:9464", "true", "15", "otlp").is_ok());
-        assert!(parse_observability("127.0.0.1:9464", "false", "0", "none").is_err());
-        assert!(parse_observability("127.0.0.1:9464", "false", "15", "zipkin").is_err());
     }
 
     #[test]

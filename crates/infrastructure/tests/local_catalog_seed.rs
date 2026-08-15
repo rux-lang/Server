@@ -1,7 +1,7 @@
 use serde_json::Value;
 use sqlx::{Error, PgPool, query, query_as, query_scalar, raw_sql};
 
-const LOCAL_CATALOG_SEED: &str = include_str!("../../../deploy/local/local-catalog.sql");
+const LOCAL_CATALOG_SEED: &str = include_str!("../../../tools/catalog/local-catalog.sql");
 
 /// A version that exists for as long as `StdLib::Io` is the first entry in
 /// `tools/catalog/packages.mjs`; the generator always starts that package's

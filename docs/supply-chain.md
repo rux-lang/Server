@@ -22,6 +22,6 @@ cargo deny --all-features check licenses sources
 
 The allowlist covers approved permissive, attribution, data, and MPL-2.0 licenses. Unknown, malformed, source-available, and strong-copyleft expressions fail unless an explicit reviewed exception is added.
 
-## Release evidence
+## Secrets
 
-Release workflows generate an SPDX SBOM for the API archive, attest its provenance and SBOM through GitHub, verify both attestations, and publish immutable draft assets. Secret scanning examines complete reachable history with redacted output.
+Gitleaks scans the complete reachable history with redacted output on every push and pull request, and weekly on a schedule. `.gitleaks.toml` allowlists only the synthetic values that appear in documentation and tests.

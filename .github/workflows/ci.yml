@@ -15,13 +15,15 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Keep in sync with playground_rux_version / playground_rux_sha256 in
-  # deploy/ansible/group_vars/all.yml. The build refuses to run without the
-  # checksum: it downloads a compiler tarball, and an unverified download is the
-  # one step of the sandbox design a network attacker could turn into arbitrary
-  # code execution inside every later run.
+  # Keep in sync with the pinned compiler recorded in docs/playground.md. The
+  # build refuses to run without the checksum: it downloads a compiler tarball,
+  # and an unverified download is the one step of the sandbox design a network
+  # attacker could turn into arbitrary code execution inside every later run.
   PLAYGROUND_RUX_VERSION: "0.3.0"
   PLAYGROUND_RUX_SHA256: 82e654f9ced042dc029220836d1322b208790099627f32efd9d8d600834be5cc
+  # Kept in step with the versions documented for local development.
+  MINIO_VERSION: RELEASE.2025-09-07T16-13-09Z
+  MINIO_MC_VERSION: RELEASE.2025-08-13T08-35-41Z
 
 jobs:
   rust:
@@ -67,129 +69,6 @@ jobs:
       - name: Build release
         run: cargo build --workspace --release
 
-  provisioning:
-    name: Production provisioning
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Check out
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: deploy/ansible/requirements.txt
-      - name: Install provisioning test dependencies
-        run: pip install --requirement deploy/ansible/requirements.txt
-      - name: Install Ansible collections
-        run: ansible-galaxy collection install --requirements-file deploy/ansible/requirements.yml
-      - name: Lint provisioning code
-        run: ansible-lint deploy/ansible
-      - name: Verify recovery scripts
-        run: bash deploy/recovery/test-recovery-scripts.sh
-      - name: Verify immutable release packaging
-        run: bash deploy/release/test-release.sh
-      - name: Verify provisioning convergence and idempotence
-        working-directory: deploy/ansible
-        run: molecule test
-      - name: Verify release deployment and rollback
-        working-directory: deploy/ansible
-        run: molecule test --scenario-name release
-
-  performance-smoke:
-    name: Performance smoke
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      DATABASE_URL: postgres://registry:registry@localhost:5432/registry_performance
-      POSTGRES_DB: registry_performance
-      RUX_BIND_ADDRESS: 127.0.0.1:8080
-      RUX_DATABASE_URL: postgres://registry:registry@localhost:5432/registry_performance
-      RUX_STORAGE_ENDPOINT: http://localhost:9000
-      RUX_STORAGE_BUCKET: packages
-      RUX_STORAGE_ACCESS_KEY: registry
-      RUX_STORAGE_SECRET_KEY: registry-secret
-      RUX_STORAGE_REGION: us-east-1
-      RUX_STORAGE_FORCE_PATH_STYLE: "true"
-      RUX_PACKAGE_CDN_BASE_URL: http://localhost:9000/packages/
-      RUX_ALLOWED_WEB_ORIGIN: http://localhost:3000
-      RUX_WEB_CALLBACK_URL: http://localhost:3000/packages/-/auth/callback
-      RUX_GITHUB_CLIENT_ID: performance-smoke-client
-      RUX_GITHUB_CLIENT_SECRET: performance-smoke-secret
-      RUX_GITHUB_CALLBACK_URL: http://localhost:8080/v1/auth/github/callback
-      RUX_RATE_LIMIT_READ_PER_MINUTE: 10000
-      RUX_RATE_LIMIT_READ_BURST: 500
-    steps:
-      - name: Check out
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: Install Rust
-        run: rustup show
-      - name: Cache Cargo
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: performance-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: performance-cargo-${{ runner.os }}-
-      - name: Start isolated dependencies
-        run: docker compose up -d --wait --wait-timeout 90
-      - name: Prepare smoke catalog and publication fixtures
-        run: |
-          mkdir -p .performance/fixtures .performance/results
-          cargo run -p rux-performance -- migrate smoke > .performance/results/migrate.json
-          cargo run -p rux-performance -- seed smoke > .performance/results/seed.json
-          cargo run -p rux-performance -- fixtures smoke .performance/fixtures "ci-${GITHUB_RUN_ID}" > .performance/results/fixtures.json
-          cargo run -p rux-performance -- size smoke > .performance/results/database-size.json
-      - name: Build release API
-        run: cargo build -p rux-server --release
-      - name: Start release API
-        run: |
-          target/release/rux-server > .performance/api.log 2>&1 &
-          echo $! > .performance/api.pid
-          for attempt in {1..60}; do
-            if curl --fail --silent http://127.0.0.1:8080/health/ready >/dev/null; then
-              exit 0
-            fi
-            sleep 2
-          done
-          cat .performance/api.log
-          exit 1
-      - name: Exercise performance scenarios
-        run: |
-          docker run --rm --network host \
-            -v "$PWD/scripts/performance:/scripts:ro" \
-            -v "$PWD/.performance:/work" \
-            grafana/k6:1.5.0 run --summary-export /work/results/api.json \
-            -e RUX_PERFORMANCE_PROFILE=smoke \
-            -e RUX_PERFORMANCE_API_BASE_URL=http://127.0.0.1:8080 \
-            /scripts/api.js
-          docker run --rm --network host \
-            -v "$PWD/scripts/performance:/scripts:ro" \
-            -v "$PWD/.performance:/work" \
-            grafana/k6:1.5.0 run --summary-export /work/results/publication.json \
-            -e RUX_PERFORMANCE_PROFILE=smoke \
-            -e RUX_PERFORMANCE_API_BASE_URL=http://127.0.0.1:8080 \
-            -e RUX_PERFORMANCE_FIXTURES=/work/fixtures \
-            /scripts/publication.js
-      - name: Upload performance evidence
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: registry-performance-smoke
-          path: |
-            .performance/results
-            .performance/api.log
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Stop isolated dependencies
-        if: ${{ always() }}
-        run: |
-          if test -f .performance/api.pid; then kill "$(cat .performance/api.pid)" 2>/dev/null || true; fi
-          docker compose down --volumes
-
   playground:
     name: Playground sandbox
     runs-on: ubuntu-latest
@@ -198,17 +77,17 @@ jobs:
       - name: Check out
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Build the pinned sandbox image
-        run: bash deploy/playground/build-image.sh "$PLAYGROUND_RUX_VERSION" "$PLAYGROUND_RUX_SHA256"
+        run: bash playground/build-image.sh "$PLAYGROUND_RUX_VERSION" "$PLAYGROUND_RUX_SHA256"
       # Asserts that a specific containment mechanism stopped each fixture - the
       # compile timeout, the pid limit, the memory limit, the dropped network,
       # the output cap, the framing - because a sandbox that merely refused
       # everything would pass a success-only suite.
       - name: Verify sandbox containment
-        run: bash deploy/playground/test-image.sh "rux-playground:$PLAYGROUND_RUX_VERSION"
+        run: bash playground/test-image.sh "rux-playground:$PLAYGROUND_RUX_VERSION"
 
   smoke:
     name: Integration smoke
-    needs: [rust, provisioning, performance-smoke]
+    needs: [rust, playground]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -225,31 +104,61 @@ jobs:
       RUX_GITHUB_CLIENT_ID: smoke-test-client
       RUX_GITHUB_CLIENT_SECRET: smoke-test-secret
       RUX_GITHUB_CALLBACK_URL: http://localhost:8080/v1/auth/github/callback
-      RUX_METRICS_BIND_ADDRESS: 0.0.0.0:9464
-      RUX_METRICS_ALLOW_NON_LOOPBACK: "true"
       RUX_PLAYGROUND_ENABLED: "true"
       RUX_PLAYGROUND_SOCKET: ${{ github.workspace }}/playground.sock
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: registry
+          POSTGRES_USER: registry
+          POSTGRES_PASSWORD: registry
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U registry -d registry"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - name: Check out
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: Start dependencies
-        run: docker compose up -d --wait --wait-timeout 90
-      - name: Validate observability configuration
+      - name: Install Rust
+        run: rustup show
+      # Run natively rather than in a container, the same way local development
+      # does, so the only container runtime this job needs is the sandbox's.
+      - name: Start MinIO
         run: |
-          docker compose --profile observability config --quiet
-          docker run --rm --entrypoint /bin/promtool \
-            -v "$PWD/deploy/observability:/etc/prometheus:ro" \
-            prom/prometheus:v3.5.0 check config /etc/prometheus/prometheus.yml
-          docker run --rm --entrypoint /bin/promtool \
-            -v "$PWD/deploy/observability:/work:ro" -w /work \
-            prom/prometheus:v3.5.0 test rules alerts.test.yml
+          mkdir -p .minio/data
+          curl --fail --silent --show-error --location \
+            --output .minio/minio \
+            "https://dl.min.io/server/minio/release/linux-amd64/archive/minio.${MINIO_VERSION}"
+          curl --fail --silent --show-error --location \
+            --output .minio/mc \
+            "https://dl.min.io/client/mc/release/linux-amd64/archive/mc.${MINIO_MC_VERSION}"
+          chmod +x .minio/minio .minio/mc
+          MINIO_ROOT_USER="$RUX_STORAGE_ACCESS_KEY" \
+          MINIO_ROOT_PASSWORD="$RUX_STORAGE_SECRET_KEY" \
+            .minio/minio server .minio/data --address 127.0.0.1:9000 > .minio/minio.log 2>&1 &
+          echo $! > .minio/minio.pid
+          for _ in {1..60}; do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/live > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          .minio/mc alias set local "$RUX_STORAGE_ENDPOINT" \
+            "$RUX_STORAGE_ACCESS_KEY" "$RUX_STORAGE_SECRET_KEY"
+          .minio/mc mb --ignore-existing "local/$RUX_STORAGE_BUCKET"
+          # Publication relies on versioned objects, and the orphan sweep lists
+          # and deletes specific versions.
+          .minio/mc version enable "local/$RUX_STORAGE_BUCKET"
       # Rebuilt here rather than shared from the playground job: moving a ~200 MB
       # image between jobs costs more than building it again, and the two jobs
       # then stay independent.
       - name: Build the pinned sandbox image
-        run: bash deploy/playground/build-image.sh "$PLAYGROUND_RUX_VERSION" "$PLAYGROUND_RUX_SHA256"
-      # Started before the API so the availability watcher finds it on its first
-      # probe. The broker is the only process here that reaches Docker.
+        run: bash playground/build-image.sh "$PLAYGROUND_RUX_VERSION" "$PLAYGROUND_RUX_SHA256"
+      # The broker is the only process here that reaches Docker.
       - name: Start the playground broker
         run: |
           export RUX_PLAYGROUND_IMAGE="rux-playground:${PLAYGROUND_RUX_VERSION}"
@@ -321,25 +230,6 @@ jobs:
           test "$origin_status" = "403"
           curl --fail --silent http://localhost:8080/v1/playground/limits \
             | jq -e '.data.max_source_bytes == 32768' > /dev/null
-      - name: Verify observability stack
-        run: |
-          docker compose --profile observability up -d --wait --wait-timeout 120 prometheus grafana
-          for attempt in {1..30}; do
-            if curl --fail --silent --get \
-              --data-urlencode 'query=up{job="rux-server"}' \
-              http://127.0.0.1:9090/api/v1/query | grep -q '"value"'; then
-              break
-            fi
-            if [ "$attempt" = 30 ]; then
-              docker compose --profile observability logs prometheus grafana
-              exit 1
-            fi
-            sleep 2
-          done
-          curl --fail --silent http://127.0.0.1:3001/api/health | grep '"database"'
-          curl --fail --silent \
-            http://127.0.0.1:3001/api/dashboards/uid/rux-server-overview \
-            | grep '"uid":"rux-server-overview"'
       - name: Upload API log
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -356,10 +246,9 @@ jobs:
           path: playgroundd.log
           if-no-files-found: warn
           retention-days: 7
-      - name: Stop the playground broker
+      - name: Stop background processes
         if: ${{ always() }}
         run: |
-          if test -f playgroundd.pid; then kill "$(cat playgroundd.pid)" 2>/dev/null || true; fi
-      - name: Stop dependencies
-        if: ${{ always() }}
-        run: docker compose down --volumes
+          for pidfile in api.pid playgroundd.pid .minio/minio.pid; do
+            if test -f "$pidfile"; then kill "$(cat "$pidfile")" 2>/dev/null || true; fi
+          done

@@ -1,7 +1,0 @@
-# Managed by Ansible. PostgreSQL administration remains local and peer-authenticated.
-local   all                  postgres                              peer
-host    {{ rux_database_name }} {{ rux_database_user }} 127.0.0.1/32 scram-sha-256
-host    {{ rux_database_name }} {{ rux_database_user }} ::1/128      scram-sha-256
-local   all                  all                                   reject
-host    all                  all                127.0.0.1/32        reject
-host    all                  all                ::1/128             reject

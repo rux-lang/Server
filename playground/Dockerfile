@@ -5,7 +5,7 @@
 # version and verified against a SHA-256 passed in as a build argument, so a
 # tampered or swapped release fails the build rather than reaching a container.
 #
-# Build it with deploy/playground/build-image.sh, which refuses to guess either
+# Build it with playground/build-image.sh, which refuses to guess either
 # argument.
 
 ARG DEBIAN_TAG=13-slim
@@ -57,7 +57,8 @@ LABEL org.opencontainers.image.title="rux-playground" \
       org.opencontainers.image.version="${RUX_VERSION}"
 
 # A fixed uid so the daemon can mount its 0700 job directory readable by this
-# user; deploy/ansible keeps the rux-playground service user on the same id.
+# user; the host's rux-playground service account must be created with the same
+# id. See docs/deployment.md.
 RUN groupadd --gid 1000 play \
  && useradd --uid 1000 --gid 1000 --home-dir /home/play --create-home --shell /usr/sbin/nologin play
 

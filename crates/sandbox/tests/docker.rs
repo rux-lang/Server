@@ -7,8 +7,8 @@
 //! cargo test -p rux-sandbox --test docker -- --ignored probe
 //! ```
 //!
-//! The remaining tests additionally need the sandbox image from
-//! `deploy/playground`, named by `RUX_PLAYGROUND_IMAGE`.
+//! The remaining tests additionally need the sandbox image from `playground/`,
+//! named by `RUX_PLAYGROUND_IMAGE`.
 
 use std::env;
 use std::time::Duration;

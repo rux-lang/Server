@@ -29,9 +29,6 @@ use rux_sandbox::{
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 
 /// Default path of the socket the API connects to.
 const DEFAULT_SOCKET: &str = "/run/rux-playground/run.sock";
@@ -313,16 +310,11 @@ fn failure_for(error: &SandboxError) -> Response {
     }
 }
 
+/// Shared with the API so both processes emit the same JSON log shape.
+///
+/// Already-installed is not an error here: the daemon logs either way.
 fn init_logging() {
-    let _ = tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with(
-            tracing_subscriber::fmt::layer()
-                .json()
-                .with_current_span(true)
-                .with_span_list(true),
-        )
-        .try_init();
+    let _ = rux_server::logging::init();
 }
 
 #[cfg(unix)]
