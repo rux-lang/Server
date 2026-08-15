@@ -41,16 +41,12 @@ LANGUAGE SQL
 IMMUTABLE
 STRICT
 PARALLEL SAFE
-RETURN cardinality($1) <= 8
+RETURN cardinality($1) <= 4
     AND $1 <@ ARRAY[
-        'Windows',
-        'Linux',
-        'MacOS',
         'FreeBSD',
-        'OpenBSD',
-        'NetBSD',
-        'DragonFlyBSD',
-        'Illumos'
+        'Linux',
+        'macOS',
+        'Windows'
     ]::TEXT[]
     AND cardinality($1) = (
         SELECT count(DISTINCT target)

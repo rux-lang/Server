@@ -25,7 +25,7 @@ ReadmeFile = "README.md"
 
 [Dependencies]
 Io = { Namespace = "Rux", Version = "^1.0" }
-Json = { Namespace = "Acme", Package = "FastJson", Version = "2", TargetOS = ["Linux", "MacOS"] }
+Json = { Namespace = "Acme", Package = "FastJson", Version = "2", TargetOS = ["Linux", "macOS"] }
 LocalUtil = { Package = "Util", Path = "../Util", TargetOS = ["Windows"] }
 
 [Build]
@@ -69,7 +69,7 @@ The spellings are exact and case-sensitive. `Program`, `Library`, and `Source` a
 
 Each dependency key is the local import alias and each value is an inline table. A registry dependency requires `Namespace` and `Version`; `Package` defaults to the alias. A path dependency requires `Path`, may override `Package`, and cannot contain `Namespace` or `Version`. Path dependencies are valid locally but rejected by the publication profile.
 
-Both dependency forms may include a non-empty, duplicate-free `TargetOS` allow-list. Supported values are exactly `Windows`, `Linux`, `MacOS`, `FreeBSD`, `OpenBSD`, `NetBSD`, `DragonFlyBSD`, and `Illumos`. Omitting `TargetOS` makes the dependency unconditional. Publication preserves the condition in normalized manifest metadata and registry dependency edges.
+Both dependency forms may include a non-empty, duplicate-free `TargetOS` allow-list. Supported values are exactly `FreeBSD`, `Linux`, `macOS`, and `Windows` — the targets Rux compiles for, so the registry never records a condition a compiler cannot evaluate. The spellings are exact and case-sensitive; `MacOS` and `macos` are invalid with no compatibility aliases. Omitting `TargetOS` makes the dependency unconditional. Publication preserves the condition in normalized manifest metadata and registry dependency edges.
 
 ## Workspace manifest
 

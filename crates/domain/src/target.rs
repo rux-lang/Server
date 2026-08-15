@@ -3,14 +3,10 @@ use std::fmt;
 /// An operating system accepted by a manifest dependency's `TargetOS` allow-list.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum TargetOs {
-    Windows,
+    FreeBsd,
     Linux,
     MacOs,
-    FreeBsd,
-    OpenBsd,
-    NetBsd,
-    DragonFlyBsd,
-    Illumos,
+    Windows,
 }
 
 impl TargetOs {
@@ -18,14 +14,10 @@ impl TargetOs {
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "Windows" => Some(Self::Windows),
-            "Linux" => Some(Self::Linux),
-            "MacOS" => Some(Self::MacOs),
             "FreeBSD" => Some(Self::FreeBsd),
-            "OpenBSD" => Some(Self::OpenBsd),
-            "NetBSD" => Some(Self::NetBsd),
-            "DragonFlyBSD" => Some(Self::DragonFlyBsd),
-            "Illumos" => Some(Self::Illumos),
+            "Linux" => Some(Self::Linux),
+            "macOS" => Some(Self::MacOs),
+            "Windows" => Some(Self::Windows),
             _ => None,
         }
     }
@@ -34,14 +26,10 @@ impl TargetOs {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Windows => "Windows",
-            Self::Linux => "Linux",
-            Self::MacOs => "MacOS",
             Self::FreeBsd => "FreeBSD",
-            Self::OpenBsd => "OpenBSD",
-            Self::NetBsd => "NetBSD",
-            Self::DragonFlyBsd => "DragonFlyBSD",
-            Self::Illumos => "Illumos",
+            Self::Linux => "Linux",
+            Self::MacOs => "macOS",
+            Self::Windows => "Windows",
         }
     }
 }

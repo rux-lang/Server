@@ -403,7 +403,7 @@ Version = "1.0.0"
 Type = "SourceLibrary"
 
 [Dependencies]
-Platform = {{ Path = "../Platform", TargetOS = ["Windows", "Linux", "MacOS", "FreeBSD", "OpenBSD", "NetBSD", "DragonFlyBSD", "Illumos"] }}
+Platform = {{ Path = "../Platform", TargetOS = ["FreeBSD", "Linux", "macOS", "Windows"] }}
 "#
     );
     let manifest = parse_manifest(&accepted).expect("supported TargetOS values should parse");
@@ -418,14 +418,10 @@ Platform = {{ Path = "../Platform", TargetOS = ["Windows", "Linux", "MacOS", "Fr
             .expect("platform dependency")
             .target_os(),
         &[
-            TargetOs::Windows,
+            TargetOs::FreeBsd,
             TargetOs::Linux,
             TargetOs::MacOs,
-            TargetOs::FreeBsd,
-            TargetOs::OpenBsd,
-            TargetOs::NetBsd,
-            TargetOs::DragonFlyBsd,
-            TargetOs::Illumos,
+            TargetOs::Windows,
         ]
     );
 
@@ -435,7 +431,13 @@ Platform = {{ Path = "../Platform", TargetOS = ["Windows", "Linux", "MacOS", "Fr
             "[\"Windows\", \"Windows\"]",
             ManifestErrorCode::NormalizedCollision,
         ),
-        ("[\"macOS\"]", ManifestErrorCode::InvalidTargetOs),
+        // The compiler spells this target `macOS`; the retired `MacOS` form has
+        // no alias, so a manifest carrying it is rejected rather than folded.
+        ("[\"MacOS\"]", ManifestErrorCode::InvalidTargetOs),
+        // Targets the compiler cannot build for stay out of the registry, so an
+        // index never carries a value that would fail a client's own decode.
+        ("[\"OpenBSD\"]", ManifestErrorCode::InvalidTargetOs),
+        ("[\"Illumos\"]", ManifestErrorCode::InvalidTargetOs),
         ("\"Windows\"", ManifestErrorCode::WrongType),
         ("[1]", ManifestErrorCode::WrongType),
     ] {
