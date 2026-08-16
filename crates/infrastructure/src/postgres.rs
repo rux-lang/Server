@@ -25,7 +25,9 @@ use rux_application::{
 };
 use rux_domain::{IdentitySegment, SemanticVersion, TargetOs, VersionRange};
 use serde_json::Value;
-use sqlx::{FromRow, PgPool, Postgres, Row, Transaction, query, query_as, query_scalar};
+use sqlx::{
+    AssertSqlSafe, FromRow, PgPool, Postgres, Row, Transaction, query, query_as, query_scalar,
+};
 use thiserror::Error;
 use time::{Date, Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -390,6 +392,12 @@ struct SitemapEntryRow {
     last_modified: OffsetDateTime,
 }
 
+// Interpolating these into a query makes the string dynamic as far as SQLx is
+// concerned, so every such query is wrapped in `AssertSqlSafe`. The assertion
+// holds for one reason only: everything interpolated anywhere in this file is a
+// constant below or a `&'static str` chosen by an exhaustive match. Submitted
+// values are always bound, never formatted, and adding a query that formats one
+// in would silently turn that wrapper into a SQL injection.
 const USER_COLUMNS: &str = "id, github_user_id::text AS github_user_id, github_login, display_name, avatar_url, created_at, updated_at, anonymized_at";
 const SESSION_COLUMNS: &str =
     "id, user_id, secret_hash, csrf_hash, created_at, last_seen_at, expires_at, revoked_at";
@@ -1066,7 +1074,7 @@ async fn pending_invitations(
              AND i.expires_at > $2
          ORDER BY i.created_at DESC, i.id DESC"
     );
-    query_as::<_, InvitationDetailsRow>(&sql)
+    query_as::<_, InvitationDetailsRow>(AssertSqlSafe(sql))
         .bind(id)
         .bind(at)
         .fetch_all(pool)
@@ -1238,19 +1246,21 @@ fn pair(
 #[async_trait]
 impl AccountReader for PostgresRepository {
     async fn user_by_id(&self, id: UserId) -> Result<Option<UserRecord>, RepositoryError> {
-        query_as::<_, UserRow>(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = $1"))
-            .bind(id.get())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(map_sqlx)?
-            .map(user_record)
-            .transpose()
+        query_as::<_, UserRow>(AssertSqlSafe(format!(
+            "SELECT {USER_COLUMNS} FROM users WHERE id = $1"
+        )))
+        .bind(id.get())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_sqlx)?
+        .map(user_record)
+        .transpose()
     }
 
     async fn user_by_github_id(&self, id: u64) -> Result<Option<UserRecord>, RepositoryError> {
-        query_as::<_, UserRow>(&format!(
+        query_as::<_, UserRow>(AssertSqlSafe(format!(
             "SELECT {USER_COLUMNS} FROM users WHERE github_user_id = $1::numeric"
-        ))
+        )))
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await
@@ -1263,9 +1273,9 @@ impl AccountReader for PostgresRepository {
         &self,
         login: &str,
     ) -> Result<Option<UserRecord>, RepositoryError> {
-        query_as::<_, UserRow>(&format!(
+        query_as::<_, UserRow>(AssertSqlSafe(format!(
             "SELECT {USER_COLUMNS} FROM users WHERE normalized_github_login = lower($1)"
-        ))
+        )))
         .bind(login)
         .fetch_optional(&self.pool)
         .await
@@ -1278,9 +1288,9 @@ impl AccountReader for PostgresRepository {
         &self,
         hash: SecretHash,
     ) -> Result<Option<SessionRecord>, RepositoryError> {
-        query_as::<_, SessionRow>(&format!(
+        query_as::<_, SessionRow>(AssertSqlSafe(format!(
             "SELECT {SESSION_COLUMNS} FROM sessions WHERE secret_hash = $1"
-        ))
+        )))
         .bind(hash.as_bytes().as_slice())
         .fetch_optional(&self.pool)
         .await
@@ -1296,9 +1306,9 @@ impl NamespaceReader for PostgresRepository {
         &self,
         name: &IdentitySegment,
     ) -> Result<Option<NamespaceRecord>, RepositoryError> {
-        query_as::<_, NamespaceRow>(&format!(
+        query_as::<_, NamespaceRow>(AssertSqlSafe(format!(
             "SELECT {NAMESPACE_COLUMNS} FROM namespaces WHERE normalized_name = $1"
-        ))
+        )))
         .bind(name.normalized())
         .fetch_optional(&self.pool)
         .await
@@ -1319,9 +1329,9 @@ impl NamespaceReader for PostgresRepository {
         &self,
         id: InvitationId,
     ) -> Result<Option<InvitationRecord>, RepositoryError> {
-        query_as::<_, InvitationRow>(&format!(
+        query_as::<_, InvitationRow>(AssertSqlSafe(format!(
             "SELECT {INVITATION_COLUMNS} FROM namespace_invitations WHERE id = $1"
-        ))
+        )))
         .bind(id.get())
         .fetch_optional(&self.pool)
         .await
@@ -1402,9 +1412,9 @@ impl TokenReader for PostgresRepository {
         &self,
         hash: SecretHash,
     ) -> Result<Option<ApiTokenRecord>, RepositoryError> {
-        let row = query_as::<_, TokenRow>(&format!(
+        let row = query_as::<_, TokenRow>(AssertSqlSafe(format!(
             "SELECT {TOKEN_COLUMNS} FROM api_tokens WHERE secret_hash = $1"
-        ))
+        )))
         .bind(hash.as_bytes().as_slice())
         .fetch_optional(&self.pool)
         .await
@@ -1419,9 +1429,9 @@ impl TokenReader for PostgresRepository {
         &self,
         user_id: UserId,
     ) -> Result<Vec<ApiTokenRecord>, RepositoryError> {
-        let rows = query_as::<_, TokenRow>(&format!(
+        let rows = query_as::<_, TokenRow>(AssertSqlSafe(format!(
             "SELECT {TOKEN_COLUMNS} FROM api_tokens WHERE user_id = $1 ORDER BY created_at DESC, id DESC"
-        ))
+        )))
         .bind(user_id.get())
         .fetch_all(&self.pool)
         .await
@@ -1441,7 +1451,7 @@ impl CatalogReader for PostgresRepository {
         namespace: &IdentitySegment,
         package: &IdentitySegment,
     ) -> Result<Option<PackageRecord>, RepositoryError> {
-        query_as::<_, PackageRow>(&format!("SELECT {QUALIFIED_PACKAGE_COLUMNS} FROM packages p JOIN namespaces n ON n.id = p.namespace_id WHERE n.normalized_name = $1 AND p.normalized_name = $2"))
+        query_as::<_, PackageRow>(AssertSqlSafe(format!("SELECT {QUALIFIED_PACKAGE_COLUMNS} FROM packages p JOIN namespaces n ON n.id = p.namespace_id WHERE n.normalized_name = $1 AND p.normalized_name = $2")))
             .bind(namespace.normalized()).bind(package.normalized()).fetch_optional(&self.pool).await.map_err(map_sqlx)?.map(package_record).transpose()
     }
 
@@ -1454,7 +1464,7 @@ impl CatalogReader for PostgresRepository {
         let sql = format!(
             "SELECT {VERSION_COLUMNS} FROM package_versions v JOIN packages p ON p.id = v.package_id JOIN namespaces n ON n.id = p.namespace_id WHERE n.normalized_name = $1 AND p.normalized_name = $2 AND v.version = $3"
         );
-        let row = query_as::<_, VersionRow>(&sql)
+        let row = query_as::<_, VersionRow>(AssertSqlSafe(sql))
             .bind(namespace.normalized())
             .bind(package.normalized())
             .bind(version.as_str())
@@ -1528,7 +1538,7 @@ impl PackageSearchReader for PostgresRepository {
             "{PACKAGE_SEARCH_SQL}{} LIMIT $8 OFFSET $9",
             package_sort_clause(criteria.sort, criteria.order)
         );
-        let rows = query_as::<_, PackageSearchRow>(&sql)
+        let rows = query_as::<_, PackageSearchRow>(AssertSqlSafe(sql))
             .bind(criteria.query.as_deref())
             .bind(criteria.identity_query.as_deref())
             .bind(pattern.as_deref())
@@ -1938,7 +1948,7 @@ impl DiscoveryReader for PostgresRepository {
                       page.package_normalized_name,
                       d.normalized_alias"
         );
-        let rows = query_as::<_, DependentPackageRow>(&sql)
+        let rows = query_as::<_, DependentPackageRow>(AssertSqlSafe(sql))
             .bind(namespace.normalized())
             .bind(package.normalized())
             .bind(boundary.map(|value| value.namespace.as_str()))
@@ -1978,7 +1988,7 @@ impl DiscoveryReader for PostgresRepository {
             keyword_sort_clause(sort)
         );
         let offset = i64::from(page - 1) * i64::from(per_page);
-        let rows = query_as::<_, KeywordDiscoveryRow>(&sql)
+        let rows = query_as::<_, KeywordDiscoveryRow>(AssertSqlSafe(sql))
             .bind(i64::from(per_page))
             .bind(offset)
             .fetch_all(&self.pool)
@@ -2105,13 +2115,13 @@ impl DiscoveryReader for PostgresRepository {
                       r.package_normalized_name
              LIMIT $3"
         );
-        let recent_rows = query_as::<_, HighlightPackageRow>(&recent_sql)
+        let recent_rows = query_as::<_, HighlightPackageRow>(AssertSqlSafe(recent_sql))
             .bind(until)
             .bind(i64::from(limit))
             .fetch_all(&self.pool)
             .await
             .map_err(map_sqlx)?;
-        let popular_rows = query_as::<_, HighlightPackageRow>(&popular_sql)
+        let popular_rows = query_as::<_, HighlightPackageRow>(AssertSqlSafe(popular_sql))
             .bind(since)
             .bind(until)
             .bind(i64::from(limit))
@@ -2277,7 +2287,7 @@ impl DiscoveryReader for PostgresRepository {
              ORDER BY kind, first_identity, second_identity
              LIMIT $4"
         );
-        let rows = query_as::<_, SitemapEntryRow>(&sql)
+        let rows = query_as::<_, SitemapEntryRow>(AssertSqlSafe(sql))
             .bind(boundary.map(|value| sitemap_kind_name(value.kind)))
             .bind(boundary.map(|value| value.first_identity.as_str()))
             .bind(boundary.and_then(|value| value.second_identity.as_deref()))
@@ -2732,7 +2742,7 @@ impl AccountWriter for PostgresTransaction {
             "INSERT INTO users (github_user_id, github_login, display_name, avatar_url) VALUES ($1::numeric, $2, $3, $4) ON CONFLICT (github_user_id) DO UPDATE SET github_login = EXCLUDED.github_login, display_name = EXCLUDED.display_name, avatar_url = EXCLUDED.avatar_url, updated_at = now() RETURNING {USER_COLUMNS}"
         );
         user_record(
-            query_as::<_, UserRow>(&sql)
+            query_as::<_, UserRow>(AssertSqlSafe(sql))
                 .bind(profile.github_user_id.to_string())
                 .bind(&profile.github_login)
                 .bind(&profile.display_name)
@@ -2751,7 +2761,7 @@ impl AccountWriter for PostgresTransaction {
             "INSERT INTO sessions (user_id, secret_hash, csrf_hash, expires_at) VALUES ($1, $2, $3, $4) RETURNING {SESSION_COLUMNS}"
         );
         session_record(
-            query_as::<_, SessionRow>(&sql)
+            query_as::<_, SessionRow>(AssertSqlSafe(sql))
                 .bind(session.user_id.get())
                 .bind(session.secret_hash.as_bytes().as_slice())
                 .bind(session.csrf_hash.as_bytes().as_slice())
@@ -2856,7 +2866,7 @@ impl NamespaceWriter for PostgresTransaction {
             "INSERT INTO namespaces (display_name, created_by_user_id) VALUES ($1, $2) RETURNING {NAMESPACE_COLUMNS}"
         );
         namespace_record(
-            query_as::<_, NamespaceRow>(&sql)
+            query_as::<_, NamespaceRow>(AssertSqlSafe(sql))
                 .bind(name.as_str())
                 .bind(actor.map(UserId::get))
                 .fetch_one(&mut *self.transaction)
@@ -2899,7 +2909,7 @@ impl NamespaceWriter for PostgresTransaction {
         let sql = format!(
             "INSERT INTO namespace_invitations (namespace_id, invited_user_id, invited_by_user_id, role, expires_at) VALUES ($1, $2, $3, $4, $5) RETURNING {INVITATION_COLUMNS}"
         );
-        let row = query_as::<_, InvitationRow>(&sql)
+        let row = query_as::<_, InvitationRow>(AssertSqlSafe(sql))
             .bind(invitation.namespace_id.get())
             .bind(invitation.invited_user_id.get())
             .bind(invitation.invited_by_user_id.map(UserId::get))
@@ -2924,7 +2934,7 @@ impl NamespaceWriter for PostgresTransaction {
         let sql = format!(
             "UPDATE namespace_invitations SET {column} = $2 WHERE id = $1 AND accepted_at IS NULL AND revoked_at IS NULL"
         );
-        let rows = query(&sql)
+        let rows = query(AssertSqlSafe(sql))
             .bind(id.get())
             .bind(at)
             .execute(&mut *self.transaction)
@@ -2966,7 +2976,7 @@ impl TokenWriter for PostgresTransaction {
         let sql = format!(
             "INSERT INTO api_tokens (user_id, display_name, token_prefix, secret_hash, expires_at) VALUES ($1, $2, $3, $4, $5) RETURNING {TOKEN_COLUMNS}"
         );
-        let row = query_as::<_, TokenRow>(&sql)
+        let row = query_as::<_, TokenRow>(AssertSqlSafe(sql))
             .bind(token.user_id.get())
             .bind(&token.display_name)
             .bind(&token.token_prefix)
@@ -3038,7 +3048,7 @@ impl CatalogWriter for PostgresTransaction {
             "INSERT INTO packages (namespace_id, display_name, created_by_user_id) VALUES ($1, $2, $3) RETURNING {PACKAGE_COLUMNS}"
         );
         package_record(
-            query_as::<_, PackageRow>(&sql)
+            query_as::<_, PackageRow>(AssertSqlSafe(sql))
                 .bind(namespace_id.get())
                 .bind(name.as_str())
                 .bind(actor.map(UserId::get))
@@ -3062,7 +3072,7 @@ impl CatalogWriter for PostgresTransaction {
             .clone()
             .map_or((None, None), |(path, text)| (Some(path), Some(text)));
         let sql = format!("INSERT INTO package_versions (package_id, version, major, minor, patch, prerelease, build_metadata, manifest_schema_version, min_rux, package_type, description, repository_url, homepage_url, readme_file_path, readme_file_text, license_expression, license_file_path, license_file_text, normalized_manifest, artifact_sha256, artifact_size, storage_key, artifact_file_count, artifact_expanded_bytes, source_file_count, source_line_count, published_by_user_id) VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27) RETURNING {VERSION_COLUMNS}").replace("v.", "");
-        let row = query_as::<_, VersionRow>(&sql)
+        let row = query_as::<_, VersionRow>(AssertSqlSafe(sql))
             .bind(version.package_id.get())
             .bind(version.version.as_str())
             .bind(version.version.major().to_string())
@@ -3248,9 +3258,9 @@ impl TransactionReader for PostgresTransaction {
         &mut self,
         name: &IdentitySegment,
     ) -> Result<Option<NamespaceRecord>, RepositoryError> {
-        query_as::<_, NamespaceRow>(&format!(
+        query_as::<_, NamespaceRow>(AssertSqlSafe(format!(
             "SELECT {NAMESPACE_COLUMNS} FROM namespaces WHERE normalized_name = $1 FOR UPDATE"
-        ))
+        )))
         .bind(name.normalized())
         .fetch_optional(&mut *self.transaction)
         .await
@@ -3272,9 +3282,9 @@ impl TransactionReader for PostgresTransaction {
         &mut self,
         login: &str,
     ) -> Result<Option<UserRecord>, RepositoryError> {
-        query_as::<_, UserRow>(&format!(
+        query_as::<_, UserRow>(AssertSqlSafe(format!(
             "SELECT {USER_COLUMNS} FROM users WHERE normalized_github_login = lower($1)"
-        ))
+        )))
         .bind(login)
         .fetch_optional(&mut *self.transaction)
         .await
@@ -3288,12 +3298,12 @@ impl TransactionReader for PostgresTransaction {
         namespace_id: NamespaceId,
         invited_user_id: UserId,
     ) -> Result<Option<InvitationRecord>, RepositoryError> {
-        query_as::<_, InvitationRow>(&format!(
+        query_as::<_, InvitationRow>(AssertSqlSafe(format!(
             "SELECT {INVITATION_COLUMNS} FROM namespace_invitations
              WHERE namespace_id = $1 AND invited_user_id = $2
                  AND accepted_at IS NULL AND revoked_at IS NULL
              FOR UPDATE"
-        ))
+        )))
         .bind(namespace_id.get())
         .bind(invited_user_id.get())
         .fetch_optional(&mut *self.transaction)
@@ -3323,7 +3333,7 @@ impl TransactionReader for PostgresTransaction {
         namespace: &IdentitySegment,
         package: &IdentitySegment,
     ) -> Result<Option<PackageRecord>, RepositoryError> {
-        query_as::<_, PackageRow>(&format!("SELECT {QUALIFIED_PACKAGE_COLUMNS} FROM packages p JOIN namespaces n ON n.id = p.namespace_id WHERE n.normalized_name = $1 AND p.normalized_name = $2 FOR UPDATE OF p"))
+        query_as::<_, PackageRow>(AssertSqlSafe(format!("SELECT {QUALIFIED_PACKAGE_COLUMNS} FROM packages p JOIN namespaces n ON n.id = p.namespace_id WHERE n.normalized_name = $1 AND p.normalized_name = $2 FOR UPDATE OF p")))
             .bind(namespace.normalized()).bind(package.normalized()).fetch_optional(&mut *self.transaction).await.map_err(map_sqlx)?.map(package_record).transpose()
     }
 
@@ -3341,9 +3351,9 @@ impl TransactionReader for PostgresTransaction {
 #[async_trait]
 impl TokenAuthorizationTransaction for PostgresTransaction {
     async fn lock_user_by_id(&mut self, id: UserId) -> Result<Option<UserRecord>, RepositoryError> {
-        query_as::<_, UserRow>(&format!(
+        query_as::<_, UserRow>(AssertSqlSafe(format!(
             "SELECT {USER_COLUMNS} FROM users WHERE id = $1 FOR UPDATE"
-        ))
+        )))
         .bind(id.get())
         .fetch_optional(&mut *self.transaction)
         .await
@@ -3356,9 +3366,9 @@ impl TokenAuthorizationTransaction for PostgresTransaction {
         &mut self,
         hash: SecretHash,
     ) -> Result<Option<ApiTokenRecord>, RepositoryError> {
-        let row = query_as::<_, TokenRow>(&format!(
+        let row = query_as::<_, TokenRow>(AssertSqlSafe(format!(
             "SELECT {TOKEN_COLUMNS} FROM api_tokens WHERE secret_hash = $1 FOR UPDATE"
-        ))
+        )))
         .bind(hash.as_bytes().as_slice())
         .fetch_optional(&mut *self.transaction)
         .await
@@ -3384,9 +3394,9 @@ impl TokenAuthorizationTransaction for PostgresTransaction {
         user_id: UserId,
         prefix: &str,
     ) -> Result<Option<ApiTokenRecord>, RepositoryError> {
-        let row = query_as::<_, TokenRow>(&format!(
+        let row = query_as::<_, TokenRow>(AssertSqlSafe(format!(
             "SELECT {TOKEN_COLUMNS} FROM api_tokens WHERE user_id = $1 AND token_prefix = $2 FOR UPDATE"
-        ))
+        )))
         .bind(user_id.get())
         .bind(prefix)
         .fetch_optional(&mut *self.transaction)
@@ -3448,9 +3458,9 @@ impl AccountTransaction for PostgresTransaction {
         &mut self,
         hash: SecretHash,
     ) -> Result<Option<SessionRecord>, RepositoryError> {
-        query_as::<_, SessionRow>(&format!(
+        query_as::<_, SessionRow>(AssertSqlSafe(format!(
             "SELECT {SESSION_COLUMNS} FROM sessions WHERE secret_hash = $1 FOR UPDATE"
-        ))
+        )))
         .bind(hash.as_bytes().as_slice())
         .fetch_optional(&mut *self.transaction)
         .await
@@ -3471,9 +3481,9 @@ impl AccountTransaction for PostgresTransaction {
 #[async_trait]
 impl AccountLifecycleTransaction for PostgresTransaction {
     async fn lock_user_by_id(&mut self, id: UserId) -> Result<Option<UserRecord>, RepositoryError> {
-        query_as::<_, UserRow>(&format!(
+        query_as::<_, UserRow>(AssertSqlSafe(format!(
             "SELECT {USER_COLUMNS} FROM users WHERE id = $1 FOR UPDATE"
-        ))
+        )))
         .bind(id.get())
         .fetch_optional(&mut *self.transaction)
         .await

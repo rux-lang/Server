@@ -1,5 +1,5 @@
 use serde_json::Value;
-use sqlx::{Error, PgPool, query, query_as, query_scalar};
+use sqlx::{AssertSqlSafe, Error, PgPool, query, query_as, query_scalar};
 use uuid::Uuid;
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -224,7 +224,7 @@ async fn assert_explain_uses(
     statement: &str,
     expected_index: &str,
 ) -> Result<(), Error> {
-    let plan = query_scalar::<_, Value>(statement)
+    let plan = query_scalar::<_, Value>(AssertSqlSafe(statement))
         .fetch_one(&mut **transaction)
         .await?;
     assert!(

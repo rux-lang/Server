@@ -9,7 +9,7 @@ use rux_application::{
     IssueApiToken, TokenScope,
 };
 use rux_infrastructure::PostgresRepository;
-use sqlx::{PgPool, query, query_scalar};
+use sqlx::{AssertSqlSafe, PgPool, query, query_scalar};
 use time::{Duration, OffsetDateTime};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -145,7 +145,7 @@ async fn reject_audits(pool: &PgPool) -> TestResult {
 }
 
 async fn assert_table_count(pool: &PgPool, table: &str, expected: i64) -> TestResult {
-    let count = query_scalar::<_, i64>(&format!("SELECT count(*) FROM {table}"))
+    let count = query_scalar::<_, i64>(AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
         .fetch_one(pool)
         .await?;
     assert_eq!(count, expected);

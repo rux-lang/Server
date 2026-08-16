@@ -4,10 +4,10 @@ PostgreSQL migrations are reviewed, reversible SQLx migrations stored in the rep
 
 ## Tooling and connection
 
-Use the SQLx CLI release that matches the workspace's SQLx dependency. The current lockfile resolves SQLx 0.8.6:
+Use the SQLx CLI release that matches the workspace's SQLx dependency. The current lockfile resolves SQLx 0.9.0:
 
 ```powershell
-cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features rustls,postgres
+cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features rustls,postgres
 ```
 
 The SQLx CLI reads `DATABASE_URL` from the environment, while the API reads `database.url` from its configuration file. The two are deliberately separate: migrations are an operator step, not something the API does at startup, so the credential that can change the schema is not the one the service runs with. Set it for the CLI process from the same value your `config/config.toml` carries:

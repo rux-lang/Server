@@ -1,5 +1,5 @@
 use sqlx::migrate::Migrator;
-use sqlx::{Error, PgPool, query, query_as, query_scalar};
+use sqlx::{AssertSqlSafe, Error, PgPool, query, query_as, query_scalar};
 use uuid::Uuid;
 
 static MIGRATOR: Migrator = sqlx::migrate!("../../migrations");
@@ -328,7 +328,10 @@ async fn credentials_roles_invitations_and_append_only_records_are_constrained(
              ) VALUES ($1, '{alias}', 'Rux', 'Json', '^1', {target_os})"
         );
         assert_constraint(
-            query(&statement).bind(version_id).execute(&pool).await,
+            query(AssertSqlSafe(statement))
+                .bind(version_id)
+                .execute(&pool)
+                .await,
             "dependencies_target_os_valid",
         );
     }
