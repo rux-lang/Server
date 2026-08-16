@@ -31,6 +31,7 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
 /// Default path of the socket the API connects to.
+#[cfg(test)]
 const DEFAULT_SOCKET: &str = "/run/rux-playground/run.sock";
 /// Permissions the socket is published with: the `rux-server` user reaches it
 /// through a shared group, and nothing else on the host may.
