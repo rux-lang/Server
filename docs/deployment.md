@@ -1,6 +1,8 @@
 # Production deployment
 
-The registry runs on one hand-configured Ubuntu droplet: PostgreSQL and the API on the host, package artifacts in DigitalOcean Spaces, and Caddy terminating TLS in front. The playground is opt-in and is the only reason Docker is installed at all. Nothing in this document is automated — every step is an operator action, deliberately, so that a change to production is something a person decided to make.
+The registry runs on one hand-configured Ubuntu droplet: PostgreSQL and the API on the host, package artifacts in DigitalOcean Spaces, and Caddy terminating TLS in front. The playground is opt-in and is the only reason Docker is installed at all.
+
+Building this host is not automated — every step below is an operator action, deliberately, so that the shape of production is something a person decided. Releasing onto it is automated: pushing a `vX.Y.Z` tag deploys that version, applies pending migrations, and verifies the result, with no approval gate. See [Deploying a new version](#deploying-a-new-version).
 
 Read [architecture.md](architecture.md) for what the components are and [migrations.md](migrations.md) for why the API never migrates its own schema.
 
@@ -235,31 +237,90 @@ One consequence of a single configuration file is worth stating rather than disc
 
 Add a `tmpfiles.d` entry so `/run/rux-playground` is recreated on boot, owned by `rux-playground:rux-playground` at mode `0750`. Start the broker before the API so the socket exists on the API's first request.
 
+## The deploy account
+
+The pipeline reaches this host as an unprivileged account that can `sudo`. Create it once, by hand:
+
+```bash
+sudo adduser --disabled-password --gecos '' deploy
+sudo install -d -m 0700 -o deploy -g deploy /home/deploy/.ssh
+sudo -u deploy tee /home/deploy/.ssh/authorized_keys > /dev/null <<'KEY'
+no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc ssh-ed25519 AAAA... github-actions-deploy
+KEY
+sudo chmod 0600 /home/deploy/.ssh/authorized_keys
+echo 'deploy ALL=(root) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/rux-deploy > /dev/null
+sudo chmod 0440 /etc/sudoers.d/rux-deploy
+sudo visudo --check
+```
+
+The key restrictions matter more than they look. Without `no-port-forwarding` that key could tunnel straight to PostgreSQL on `127.0.0.1:5432`, which is otherwise unreachable from outside the host.
+
+Be plain about what this grants: **the deploy key is root-equivalent on this droplet, and pushing a tag is enough to use it.** That is the accepted trade for an automated deploy that also migrates the database — the sequence has to stop services, write to `/srv`, and read a `0400 root:root` configuration file. What the sudoers entry buys is attribution, not containment: every command is `deploy`'s in `auth.log` rather than an anonymous root login. What actually limits the blast radius is on GitHub's side: the `production` environment restricted to `v*` tags, a tag ruleset that only maintainers can create, and branch protection on `main`.
+
+The `deploy` account must **not** join `docker`, `rux-server`, or `rux-playground`. It reaches everything through `sudo`, so a group membership would only add a standing grant.
+
+The remaining one-time preparation:
+
+```bash
+sudo install -d -m 0755 -o root -g root /srv/rux-server/bin
+sudo apt-get install -y python3 postgresql-client-18 util-linux curl
+```
+
+`python3` parses the configuration file, `pg_dump` takes the pre-migration snapshot, and `flock` from `util-linux` keeps two deploys from overlapping. No Rust toolchain is needed: the SQLx CLI travels in the release tarball, already pinned to the workspace's SQLx version.
+
 ## Deploying a new version
 
-Build the release artifacts and copy them up:
+A tag is a deploy. From a green `dev`:
 
-```bash
-cargo build --workspace --release
+```powershell
+./Run.ps1 release 0.1.1     # bump the workspace version, run the gates, commit
+git push origin dev         # let CI go green
+./Run.ps1 promote           # fast-forward main, tag v0.1.1, push both
 ```
 
-The API does not migrate its own schema, so migrations are a separate, deliberate step. Review what is pending before applying anything:
+`.github/workflows/release.yml` then, in order: checks that the tag matches `[workspace.package] version` in `Cargo.toml` and that the tagged commit is on `main`; runs the whole CI suite against it; builds `--release --locked` on a pinned Ubuntu 24.04 runner; packages the binaries, `migrations/`, and the pinned SQLx CLI into a checksummed tarball; publishes a GitHub Release; and deploys that exact artifact over SSH.
+
+Building on 24.04 while the host runs 26.04 is deliberate. glibc is backward compatible, so an older build runs on a newer host but not the reverse; pinning the runner keeps that floor a decision rather than something GitHub moves when `ubuntu-latest` advances.
+
+On the host, `.github/deploy/deploy.sh` runs the sequence. It verifies the checksum, unpacks, and checks the staged `rux-server` actually loads on this host's glibc — neither binary takes `--version`, so it is started against a deliberately absent configuration file and expected to fail in our own parser rather than in the loader. It then reads `database.url` out of `/etc/rux/config.toml` and reports the pending migrations. **Nothing so far has touched the running service**, and a failure at any of those points leaves production untouched.
+
+Only then does it snapshot the installed binaries as `.previous`, stop `rux-server`, take a custom-format `pg_dump` into `/var/backups/rux`, apply the migrations, install the new binaries, and start the service. Migrations run before the binaries are installed rather than after, so a failed migration leaves the outgoing binary in place and recovery is a plain restart.
+
+Verification is what ends the deploy, and it happens on the host: Caddy answers 404 for `/health` and `/health/*` publicly, so the checks poll `127.0.0.1:8080`.
 
 ```bash
-sqlx migrate info
-```
-
-Then, on the host: stop the services, keep the outgoing binaries as `.previous` alongside the new ones, install the new binaries, run `sqlx migrate run`, and start the services back up. Verify before considering the deploy done:
-
-```bash
+curl --fail --silent http://127.0.0.1:8080/health/live
 curl --fail --silent http://127.0.0.1:8080/health/ready
 ```
 
-Confirm both `postgresql` and `object_storage` report healthy, check the public API answers through Caddy, and read the first minute of `journalctl -u rux-server` for anything unexpected.
+The `version` field on `/health/live` must equal the version just deployed — that is what proves the process answering is the new one, rather than a restart that silently failed and left the previous binary serving. It identifies the release and not the commit, so the tarball also carries a `COMMIT` file; two builds of one version are otherwise indistinguishable here. Readiness must be 200 with both `postgresql` and `object_storage` healthy. The last sixty journal lines land in the workflow log and the run summary either way.
+
+Secrets live in a GitHub environment named `production`, restricted to `v*` tags: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, and `DEPLOY_KNOWN_HOSTS` — the pinned output of `ssh-keyscan -t ed25519 <host>`, checked against the droplet console's fingerprint before it is trusted. **No production credential is stored on GitHub.** The database URL, the Spaces keys, and the GitHub OAuth secret stay in `/etc/rux/config.toml`, which is never deployed and never leaves the host, so a compromise of the repository yields command execution here but not the registry's credentials.
+
+To rehearse without touching the service, run the workflow by hand with the tag selected as the ref and `dry_run` true. It stops immediately after the migration pre-flight.
+
+### Deploying by hand
+
+Keep this path working; [recovery.md](recovery.md) sends you here when rebuilding a host, and it is what you use when GitHub is unavailable. Download the release tarball and its `.sha256` from the Releases page, copy them to the host, and run the same script the pipeline runs:
+
+```bash
+sha256sum --check --strict rux-server-v0.1.1-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf rux-server-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
+bash rux-server-v0.1.1-x86_64-unknown-linux-gnu/deploy.sh 0.1.1 \
+  rux-server-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
+```
+
+Or do it step by step: stop the service, keep the outgoing binaries as `.previous`, `sqlx migrate info` and `sqlx migrate run` with `DATABASE_URL` read out of `/etc/rux/config.toml`, install the new binaries under `/srv/rux-server/bin/`, start the service, and make the same two health assertions.
 
 ## Rolling back
 
-Restore the `.previous` binaries and restart. **Migrations are never reverted in production.** A rollback is only safe if the previous binary is compatible with the schema now in the database — decide that before restarting, not after. If it is not, roll forward with a new migration instead; see [migrations.md](migrations.md).
+The deploy rolls itself back. If anything fails after the service is stopped, the script restores the `.previous` binaries, restarts, and reports whether the previous release came back healthy. `.previous` is snapshotted *before* the stop, so it always means "what this run displaced" rather than whatever an earlier deploy left behind.
+
+**Migrations are never reverted in production.** If the failure happened after they were applied, the restored binary is running against the new schema and the script says so in capitals, naming the pre-migration dump. That situation is only safe if the previous release tolerates the new schema — which is exactly what the expand-and-contract rule in [migrations.md](migrations.md) exists to guarantee, and why "compatible with the outgoing release" is a requirement rather than advice now that rollback is automatic. If it does not tolerate it, roll forward with a new migration.
+
+The one state that needs a person is a rollback that itself fails to come back healthy; the script prints `THIS HOST NEEDS AN OPERATOR NOW` and the run goes red. Restore the `.previous` binaries by hand, and if the schema is the problem, `pg_restore --clean --if-exists --no-owner` from the dump the script named.
+
+To roll back deliberately rather than on failure, deploy the previous tag again — the artifact is still on the Releases page — after deciding the schema is compatible.
 
 ## Operating
 

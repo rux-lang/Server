@@ -7,8 +7,11 @@
     docs/migrations.md, docs/playground.md, and .github/workflows/ci.yml. Run
     without arguments for full help.
 
-    Local development only. The production sequences in docs/deployment.md and
-    docs/recovery.md are deliberately unautomated and are not reproduced here.
+    Local development, plus the two steps that cut a release: "release" bumps
+    the workspace version and "promote" fast-forwards main and tags it. Neither
+    touches production - the tag is what deploys, from .github/workflows/release.yml.
+    The host sequences in docs/recovery.md remain deliberately manual and are
+    not reproduced here.
 #>
 
 # Deliberately no param() block. Arguments arrive in $args exactly as typed,
@@ -85,6 +88,11 @@ $Commands = @(
     @{ Group = 'Verification'; Name = 'smoke'; Aliases = 'verify'; Usage = 'smoke'
         Summary = "CI's contract checks against an API you already started." }
 
+    @{ Group = 'Release'; Name = 'release'; Aliases = 'bump'; Usage = 'release <x.y.z>'
+        Summary = 'Bump the workspace version on dev, run the gates, and commit it.' }
+    @{ Group = 'Release'; Name = 'promote'; Aliases = 'tag, ship'; Usage = 'promote [--yes]'
+        Summary = 'Fast-forward main to dev and push the tag that deploys production.' }
+
     @{ Group = 'Housekeeping'; Name = 'clean'; Aliases = ''; Usage = 'clean'
         Summary = 'cargo clean, and remove the playground test scratch directory.' }
 )
@@ -105,6 +113,8 @@ $Aliases = @{
     'minio' = 'storage'; 's3' = 'storage'
     'sandbox' = 'playground'
     'verify' = 'smoke'
+    'bump' = 'release'
+    'tag' = 'promote'; 'ship' = 'promote'
 }
 
 # ---------------------------------------------------------------------------
@@ -500,8 +510,16 @@ function Show-Help {
     Write-Host '  and refuses unknown keys. In use right now:'
     Write-Host "    $(Resolve-ConfigPath)"
 
+    Write-Heading 'Releasing'
+    Write-Host '  A tag is a deploy. Pushing v0.1.1 builds, migrates production, and'
+    Write-Host '  installs the new binaries - see docs\deployment.md.'
+    Write-Host ''
+    Write-Host '    ./Run.ps1 release 0.1.1' -ForegroundColor Cyan
+    Write-Host '    git push origin dev' -ForegroundColor Cyan
+    Write-Host '    ./Run.ps1 promote' -ForegroundColor Cyan
+
     Write-Heading 'Not covered here'
-    Write-Host '  Production deployment and recovery are deliberately manual - see'
+    Write-Host '  Provisioning a host and recovering one are deliberately manual - see'
     Write-Host '  docs\deployment.md and docs\recovery.md.'
     Write-Host ''
 }
@@ -779,6 +797,179 @@ function Invoke-Playground {
         }
         default { throw "Unknown playground subcommand '$action'. Try build, test, or docker-test." }
     }
+}
+
+# ---------------------------------------------------------------------------
+# Release
+# ---------------------------------------------------------------------------
+
+# Read-TomlScalars is for flat key = value probes and cannot tell this apart
+# from the several other version keys in Cargo.toml, so the section is tracked
+# explicitly. Every crate inherits it through version.workspace, so this one
+# line is the whole version of the workspace.
+function Get-WorkspaceVersion {
+    $lines = [System.IO.File]::ReadAllLines((Join-Path $RepoRoot 'Cargo.toml'))
+    $inSection = $false
+
+    foreach ($line in $lines) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq '[workspace.package]') { $inSection = $true; continue }
+        if ($trimmed.StartsWith('[')) { $inSection = $false; continue }
+        if ($inSection -and $trimmed -match '^version\s*=\s*"([^"]+)"$') { return $Matches[1] }
+    }
+
+    return $null
+}
+
+function Set-WorkspaceVersion {
+    param([Parameter(Mandatory)][string] $Version)
+
+    $path = Join-Path $RepoRoot 'Cargo.toml'
+    $lines = [System.IO.File]::ReadAllLines($path)
+    $inSection = $false
+
+    for ($index = 0; $index -lt $lines.Length; $index++) {
+        $trimmed = $lines[$index].Trim()
+        if ($trimmed -eq '[workspace.package]') { $inSection = $true; continue }
+        if ($trimmed.StartsWith('[')) { $inSection = $false; continue }
+        if ($inSection -and $trimmed -match '^version\s*=\s*"[^"]+"$') {
+            $lines[$index] = "version = `"$Version`""
+            # LF, like every other file in the repository.
+            [System.IO.File]::WriteAllText($path, ($lines -join "`n") + "`n")
+            return
+        }
+    }
+
+    throw 'Could not find the version under [workspace.package] in Cargo.toml'
+}
+
+function Get-GitOutput {
+    param([Parameter(Mandatory)][string[]] $GitArguments)
+
+    $output = & git @GitArguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "git $($GitArguments -join ' ') failed: $(($output | Out-String).Trim())"
+    }
+    return ($output | Out-String).Trim()
+}
+
+function Assert-CleanTree {
+    $status = Get-GitOutput @('status', '--porcelain')
+    if ($status) {
+        Write-Host $status
+        throw 'The working tree has changes. Commit or stash them first.'
+    }
+}
+
+function Assert-OnBranch {
+    param([Parameter(Mandatory)][string] $Branch)
+
+    $current = Get-GitOutput @('rev-parse', '--abbrev-ref', 'HEAD')
+    if ($current -ne $Branch) {
+        throw "This runs on $Branch; you are on '$current'."
+    }
+}
+
+function Invoke-Release {
+    param([string[]] $Tail)
+
+    if ($Tail.Count -lt 1) {
+        Write-Fail 'release needs the new version.' 'For example: ./Run.ps1 release 0.1.1'
+        $script:FailureCode = 64
+        throw 'missing version'
+    }
+
+    $version = $Tail[0].TrimStart('v')
+    if ($version -notmatch '^\d+\.\d+\.\d+$') {
+        throw "The version must be x.y.z (got '$version'). Release.yml only triggers on tags of that shape."
+    }
+
+    $current = Get-WorkspaceVersion
+    if (-not $current) { throw 'Could not read the workspace version from Cargo.toml' }
+    if (([version] $version) -le ([version] $current)) {
+        throw "The workspace is already at $current, so $version is not a bump."
+    }
+
+    Assert-OnBranch 'dev'
+    Assert-CleanTree
+
+    Write-Note "Bumping the workspace version from $current to $version."
+    Set-WorkspaceVersion $version
+
+    # Every crate inherits version.workspace, so the lockfile records the number
+    # too and has to follow it.
+    Invoke-Step 'cargo' @('update', '--workspace') | Out-Null
+
+    Invoke-Gates
+
+    Invoke-Step 'git' @('add', 'Cargo.toml', 'Cargo.lock') | Out-Null
+    Invoke-Step 'git' @('commit', '--message', "Release v$version") | Out-Null
+
+    Write-Host ''
+    Write-Ok "Committed Release v$version on dev."
+    Write-Note 'Push it, wait for CI to go green, then publish with:'
+    Write-Host ''
+    Write-Host '    git push origin dev' -ForegroundColor Cyan
+    Write-Host '    ./Run.ps1 promote' -ForegroundColor Cyan
+    Write-Host ''
+}
+
+function Invoke-Promote {
+    param([string[]] $Tail)
+
+    $assumeYes = $Tail -contains '--yes' -or $Tail -contains '-y'
+
+    $version = Get-WorkspaceVersion
+    if (-not $version) { throw 'Could not read the workspace version from Cargo.toml' }
+    $tag = "v$version"
+
+    Assert-OnBranch 'dev'
+    Assert-CleanTree
+
+    Invoke-Step 'git' @('fetch', 'origin', 'dev', 'main', '--tags') | Out-Null
+
+    # dev must already be pushed, or main would fast-forward onto a commit CI has
+    # never seen and the tag guard would reject it anyway.
+    if ((Get-GitOutput @('rev-parse', 'dev')) -ne (Get-GitOutput @('rev-parse', 'origin/dev'))) {
+        throw 'dev and origin/dev differ. Push dev and let CI finish first.'
+    }
+
+    & git merge-base --is-ancestor origin/main dev
+    if ($LASTEXITCODE -ne 0) {
+        throw 'main is not an ancestor of dev, so it cannot fast-forward. Reconcile them by hand.'
+    }
+
+    if (Get-GitOutput @('tag', '--list', $tag)) {
+        throw "Tag $tag already exists. Cut a new version with ./Run.ps1 release <x.y.z>."
+    }
+
+    Write-Host ''
+    Write-Warn "Pushing $tag deploys it to production." 'The pipeline migrates the production database and swaps the binaries with no further approval.'
+
+    if (-not $assumeYes) {
+        $answer = Read-Host "Type $tag to continue"
+        if ($answer -ne $tag) {
+            Write-Note 'Nothing was pushed.'
+            return
+        }
+    }
+
+    Invoke-Step 'git' @('checkout', 'main') | Out-Null
+    try {
+        Invoke-Step 'git' @('merge', '--ff-only', 'dev') | Out-Null
+        Invoke-Step 'git' @('push', 'origin', 'main') | Out-Null
+        Invoke-Step 'git' @('tag', '--annotate', $tag, '--message', "rux-server $version") | Out-Null
+        Invoke-Step 'git' @('push', 'origin', $tag) | Out-Null
+    }
+    finally {
+        Invoke-Step 'git' @('checkout', 'dev') -AllowFailure | Out-Null
+    }
+
+    Write-Host ''
+    Write-Ok "Pushed main and $tag."
+    Write-Note 'Watch the deploy at'
+    Write-Host '    https://github.com/rux-lang/Server/actions/workflows/release.yml' -ForegroundColor Cyan
+    Write-Host ''
 }
 
 function Invoke-Config {
@@ -1195,6 +1386,8 @@ try {
         'storage' { Invoke-Storage $tail }
         'playground' { Invoke-Playground $tail }
         'smoke' { Invoke-Smoke }
+        'release' { Invoke-Release $tail }
+        'promote' { Invoke-Promote $tail }
         'clean' { Invoke-Clean }
         default {
             Write-Fail "Unknown command '$($tokens[0])'." 'Run ./Run.ps1 for the full list.'

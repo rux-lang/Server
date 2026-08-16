@@ -81,7 +81,11 @@ The first status check identifies the pending set. `run` applies it and rejects 
 
 Production API code must not run an embedded or filesystem migrator as part of startup or otherwise write SQLx migration state. If the schema is not suitable for a release, startup or readiness may fail, but the process must not repair or advance the schema automatically.
 
-In production this is a deliberate operator step run over SSH with the same pinned SQLx CLI. Review the pending set with `sqlx migrate info` before applying anything, and apply it before starting the new binaries. See [deployment.md](deployment.md).
+In production this is applied by the release pipeline, with the same pinned CLI and the same three commands. The CLI is not installed on the host: it is built from the lockfile's SQLx version and shipped inside the release tarball, so it cannot drift from the workspace. `sqlx migrate info` runs during the pre-flight, before the service is stopped, and its output lands in the workflow log and the run summary — so the pending set is reviewable after the fact, and a checksum mismatch aborts the deploy before anything stops. That is the immutability rule above being enforced mechanically rather than remembered.
+
+A custom-format `pg_dump` is taken after the service stops and before `migrate run`, and its path is printed. `sqlx migrate revert` is still never run against production. See [deployment.md](deployment.md).
+
+One consequence of an automatic rollback is worth stating here rather than discovering: because a failed deploy restores the previous binary without reverting migrations, "the schema remains compatible with both the outgoing and incoming API releases" in the review checklist above is a hard requirement, not a preference. A migration that the outgoing release cannot tolerate must not ship in the same tag as the code that needs it — use expand-and-contract.
 
 ## Rollback and recovery policy
 

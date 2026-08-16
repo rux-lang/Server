@@ -1,6 +1,7 @@
 # Rux Server
 
 [![CI](https://github.com/rux-lang/Server/actions/workflows/ci.yml/badge.svg)](https://github.com/rux-lang/Server/actions/workflows/ci.yml)
+[![Release](https://github.com/rux-lang/Server/actions/workflows/release.yml/badge.svg)](https://github.com/rux-lang/Server/actions/workflows/release.yml)
 [![License](https://img.shields.io/github/license/rux-lang/Server?style=flat)](LICENSE.md)
 
 The Rust server for the Rux programming language. It hosts the package registry and the playground; language tooling and chat integrations are planned alongside them. The public API is hosted at <https://api.rux-lang.dev>; the package catalog is part of <https://rux-lang.dev/packages>.
@@ -43,7 +44,7 @@ Configuration is one TOML file. Both binaries read it, taking its path from `--c
 
 Keep your own credentials out of the repository: `./Run.ps1 config init` copies the committed file to `%APPDATA%\rux\config.toml`, and every command prefers that copy once it exists. It is a whole configuration rather than an overlay, because the server does no layering and refuses unknown keys.
 
-The local API listens on <http://localhost:8080>. Liveness, readiness, and OpenAPI are available at `/health/live`, `/health/ready`, and `/openapi/v1.json`. Logs are structured JSON on stdout; there is no metrics endpoint.
+The local API listens on <http://localhost:8080>. Liveness, readiness, and OpenAPI are available at `/health/live`, `/health/ready`, and `/openapi/v1.json`. Liveness also reports the build version compiled into the binary. Logs are structured JSON on stdout; there is no metrics endpoint.
 
 ## Quality gates
 
@@ -57,6 +58,18 @@ cargo build --workspace --release
 ```
 
 Production secrets belong in the root-owned `/etc/rux/config.toml` and must never be committed. The browser origin and callback are configured independently with `web.allowed_origin` and `web.callback_url`.
+
+## Releasing
+
+A tag is a deploy. From a green `dev`, bump the version, promote it to `main`, and push the tag; `v0.1.1` then builds, applies pending migrations, and installs the new binaries on the droplet with no further approval.
+
+```powershell
+./Run.ps1 release 0.1.1     # bump the workspace version, run the gates, commit
+git push origin dev         # let CI go green
+./Run.ps1 promote           # fast-forward main, tag v0.1.1, push both
+```
+
+The tag must match `[workspace.package] version` in `Cargo.toml` and point at a commit on `main`, or the pipeline refuses it before building anything. Configuration is never deployed — the droplet's `/etc/rux/config.toml` is the only copy. See [docs/deployment.md](docs/deployment.md).
 
 ## Contributing
 

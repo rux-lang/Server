@@ -1,0 +1,254 @@
+name: Release
+
+# A tag is a production deploy. Pushing v0.1.1 runs the full CI suite against
+# the tagged commit, builds the release artifacts, publishes them as a GitHub
+# Release, and installs them on the droplet - applying any pending migrations
+# on the way. See docs/deployment.md.
+#
+# The same workflow can be dispatched by hand with the tag selected as the ref,
+# which is how a dry run is made: it stops before the service is touched.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Verify SSH, the checksum, and the pending migrations without touching the service
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# One release at a time, and never cancelled: a cancelled run could leave the
+# service stopped or a migration applied with the old binary still installed.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  guard:
+    name: Guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      # Both checks are cheap and run before anything is built, so a mistagged
+      # release costs seconds and never reaches the droplet.
+      - name: Verify the tag against the manifest and main
+        id: check
+        run: |
+          set -euo pipefail
+
+          if test "$GITHUB_REF_TYPE" != tag; then
+            echo "::error::Release runs from a tag. Re-run this workflow with a v* tag selected as the ref."
+            exit 1
+          fi
+
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          manifest="$(awk '
+            /^\[workspace\.package\]/ { section = 1; next }
+            /^\[/                     { section = 0 }
+            section && /^version = /  { gsub(/["]/, "", $3); print $3; exit }
+          ' Cargo.toml)"
+
+          if test -z "$manifest"; then
+            echo "::error::Could not read [workspace.package] version from Cargo.toml"
+            exit 1
+          fi
+          if test "$version" != "$manifest"; then
+            echo "::error::Tag $tag does not match the Cargo.toml version $manifest. Bump one of them."
+            exit 1
+          fi
+
+          # A tag on a stray branch must not be able to deploy.
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$tag points at a commit that is not on main. Fast-forward main to dev first."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag from $(git rev-parse --short "$GITHUB_SHA") on main."
+
+  # The whole CI suite - the four gates, the sandbox containment tests, and the
+  # integration smoke run - against the tagged commit, rather than a copy of
+  # them that could drift.
+  verify:
+    name: Verify
+    needs: guard
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build and publish
+    needs: [guard, verify]
+    # Pinned rather than ubuntu-latest on purpose. The droplet is Ubuntu 26.04;
+    # building against an older glibc and running on a newer one is the safe
+    # direction, and pinning stops GitHub moving the floor under us.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Cache Cargo
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-release-${{ runner.os }}-
+      # Deliberately not --all-features: this is the same invocation the CI gate
+      # makes, so the binary that ships is the one CI built.
+      # --locked because a release must not silently resolve a dependency graph
+      # other than the reviewed lockfile's.
+      - name: Build release binaries
+        run: cargo build --workspace --release --locked
+
+      # The droplet gets no Rust toolchain, so the CLI that applies migrations
+      # is built here and shipped in the tarball. Reading the version out of
+      # Cargo.lock is what docs/migrations.md asks for - "the SQLx CLI release
+      # that matches the workspace's SQLx dependency" - done by the machine
+      # rather than from memory.
+      - name: Resolve the pinned SQLx CLI version
+        id: sqlx
+        run: |
+          set -euo pipefail
+          version="$(awk '/^name = "sqlx"$/ { getline; gsub(/["]/, "", $3); print $3; exit }' Cargo.lock)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "SQLx CLI pinned to $version"
+      - name: Cache the SQLx CLI
+        id: sqlx-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .sqlx-cli
+          key: sqlx-cli-${{ runner.os }}-${{ steps.sqlx.outputs.version }}
+      - name: Build the SQLx CLI
+        if: steps.sqlx-cache.outputs.cache-hit != 'true'
+        run: |
+          cargo install sqlx-cli --version "${{ steps.sqlx.outputs.version }}" --locked \
+            --no-default-features --features rustls,postgres --root .sqlx-cli
+
+      # Self-contained: migrations are not embedded in either binary, so they
+      # travel with them, and so does the script that installs the whole thing.
+      - name: Assemble the release tarball
+        run: |
+          set -euo pipefail
+          name="rux-server-v${VERSION}-x86_64-unknown-linux-gnu"
+          install -d "stage/$name/bin" "stage/$name/migrations"
+          install -m 0755 target/release/rux-server target/release/rux-playgroundd "stage/$name/bin/"
+          install -m 0755 .sqlx-cli/bin/sqlx "stage/$name/bin/"
+          install -m 0644 migrations/*.sql "stage/$name/migrations/"
+          install -m 0755 .github/deploy/deploy.sh "stage/$name/"
+          printf '%s\n' "$VERSION" > "stage/$name/VERSION"
+          printf '%s\n' "$GITHUB_SHA" > "stage/$name/COMMIT"
+          # /health/live reports only the version, so the commit is recorded
+          # here: two builds of one version are otherwise indistinguishable.
+          ( cd "stage/$name" && find . -type f ! -name SHA256SUMS -print0 \
+              | sort -z | xargs -0 sha256sum > SHA256SUMS )
+          tar --sort=name --numeric-owner --owner=0 --group=0 -czf "$name.tar.gz" -C stage "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          cat "$name.tar.gz.sha256"
+          echo "TARBALL=$name.tar.gz" >> "$GITHUB_ENV"
+
+      # Idempotent, so a dry run against an already-released tag replaces the
+      # assets instead of failing.
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$TARBALL" "$TARBALL.sha256" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --title "rux-server $VERSION" \
+              --generate-notes \
+              "$TARBALL" "$TARBALL.sha256"
+          fi
+
+  deploy:
+    name: Deploy
+    needs: [guard, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Scope the droplet credentials to an environment whose deployment rule is
+    # restricted to v* tags. See docs/deployment.md.
+    environment: production
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      # Deploys exactly what was published, rather than a second build of the
+      # same commit.
+      - name: Download the published artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "$GITHUB_REF_NAME" --pattern '*.tar.gz' --pattern '*.tar.gz.sha256' --clobber
+          echo "TARBALL=rux-server-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz" >> "$GITHUB_ENV"
+      # known_hosts is pinned from a secret rather than discovered with
+      # ssh-keyscan, which would trust whatever answers on the day.
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 0600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/known_hosts
+      - name: Copy the release to the droplet
+        run: |
+          set -euo pipefail
+          scp -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "$TARBALL" "$TARBALL.sha256" \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/"
+      # The sequence lives in the repository and is piped to the host, so the
+      # droplet has nothing pre-installed to keep in step with this workflow.
+      - name: Install and verify
+        run: |
+          set -euo pipefail
+          flags=""
+          if test "${{ inputs.dry_run }}" = "true"; then
+            flags="--dry-run"
+          fi
+          # BatchMode so a prompt fails the run instead of hanging, and an outer
+          # timeout so a wedged sshd cannot hold the release lock open.
+          timeout 900 ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$VERSION' '/tmp/$TARBALL' $flags" \
+            < .github/deploy/deploy.sh 2>&1 | tee deploy.log
+      - name: Record the deploy in the run summary
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "## Deploy v${VERSION}"
+            echo
+            echo '```'
+            cat deploy.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
