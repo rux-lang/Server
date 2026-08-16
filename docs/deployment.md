@@ -10,25 +10,45 @@ Read [architecture.md](architecture.md) for what the components are and [migrati
 
 Use Ubuntu 26.04 LTS on x86-64. Create an administrator account with your SSH key, disable password and root SSH login, and enable unattended security upgrades. Bound journald so logs cannot fill the disk.
 
-The firewall accepts 22, 80, and 443 and drops everything else, including forwarded traffic:
+On a cloud image the default `ubuntu` account already is that administrator: it carries the SSH key and passwordless sudo. It also holds uid 1000, which [Service accounts](#service-accounts) would rather give to `rux-playground` — read that section before deciding whether to move it, because the answer is "preferably, not necessarily".
+
+The firewall accepts 22, 80, and 443 and drops everything else, including forwarded traffic. The input chain is created accepting and only closed at the end, because a chain that becomes `policy drop` before the established-connection rule exists kills the SSH session you are typing into:
 
 ```bash
 sudo nft add table inet filter
+sudo nft 'add chain inet filter input { type filter hook input priority 0; policy accept; }'
+sudo nft 'add rule inet filter input ct state established,related accept'
+sudo nft 'add rule inet filter input iif lo accept'
+sudo nft 'add rule inet filter input ct state invalid drop'
+sudo nft 'add rule inet filter input tcp dport { 22, 80, 443 } accept'
+sudo nft 'add rule inet filter input meta l4proto { icmp, ipv6-icmp } accept'
 sudo nft 'add chain inet filter forward { type filter hook forward priority 0; policy drop; }'
+sudo nft 'chain inet filter input { policy drop; }'
+```
+
+ICMP stays open in both families deliberately: dropping ICMPv6 breaks path-MTU discovery and neighbour discovery, which fails as intermittent stalls rather than as a refused connection. Nothing above survives a reboot until it is written out, and `nft -f` on a file with no `flush ruleset` appends to whatever is already loaded, so the flush belongs in the file rather than in the operator's memory:
+
+```bash
+{ echo 'flush ruleset'; sudo nft list ruleset; } | sudo tee /etc/nftables.conf > /dev/null
+sudo systemctl enable --now nftables
 ```
 
 The forward policy matters for the playground: it is the outer guarantee that a sandbox container reaches no network even if a container flag is ever wrong.
 
 ## Service accounts
 
-Two system users, no login shells:
+Two system users, no login shells. The second one and both group memberships below are the playground's; a registry-only host needs `rux-server` alone:
 
 ```bash
 sudo useradd --system --home-dir /srv/rux-server --shell /usr/sbin/nologin rux-server
 sudo useradd --system --uid 1000 --home-dir /var/lib/rux-playground --shell /usr/sbin/nologin rux-playground
 ```
 
-`rux-playground` must be uid 1000 to match the `play` user baked into the sandbox image — the broker mounts a `0700` job directory into the container and passes `--user` with the host uid that owns it. Only `rux-playground` joins the `docker` group; `rux-server` never does. The API reaches the broker through a shared group instead:
+Uid 1000 matches the `play` user baked into the sandbox image by `playground/Dockerfile`, and it is a preference rather than a requirement — worth stating exactly, because the `useradd` above fails outright when a cloud image's default `ubuntu` account already holds it. What the broker passes as `--user` is whatever uid owns the `0700` job directory, so the mount is self-consistent at any number. What matching buys is a real passwd entry inside the container: at 1000 the run owns `$HOME` and could write there, while at any other uid it is an anonymous uid that reads the pinned compiler's package cache through the image's `a+rX` and builds in the `1777` tmpfs at `/work`. That unmatched case is the one CI exercises on every push, because the smoke job runs the broker as the runner account.
+
+So take 1000 if it is free, and if it is not, either move the account holding it (`usermod --uid 1100 ubuntu`, from a root session, then `find / -xdev -uid 1000`) or simply pass `--uid 1001` here. `useradd` warns that 1001 is above `SYS_UID_MAX`; the warning is cosmetic and the account is still created with system semantics. Revisit the choice only if a future pinned compiler needs to write under `$HOME` — CI fails first if it does.
+
+Only `rux-playground` joins the `docker` group; `rux-server` never does. The API reaches the broker through a shared group instead. Both lines need the `docker` group to exist, so they wait until Docker is installed in [The playground](#the-playground-optional):
 
 ```bash
 sudo usermod --append --groups docker rux-playground
@@ -66,7 +86,9 @@ sudo install -m 0400 -o root -g root /dev/null /etc/rux/config.toml
 sudoedit /etc/rux/config.toml
 ```
 
-At minimum it sets `database.url`, the four required `[storage]` values, `packages.cdn_base_url`, `[web]`, and the two required `[github]` OAuth values. The browser origin and the callback are configured independently on purpose. Secrets belong only in this file; it is never committed and never logged.
+At minimum it sets `database.url`, the four required `[storage]` values, `packages.cdn_base_url`, `[web]`, the two required `[github]` OAuth values, and `uploads.temporary_directory = "/var/lib/rux-server/uploads"`. The browser origin and the callback are configured independently on purpose. Secrets belong only in this file; it is never committed and never logged.
+
+The upload directory is the one entry on that list with a working default, and the default is wrong here rather than merely unset: omitted, it resolves to the operating-system temporary directory, which `PrivateTmp=true` below makes a private tmpfs. Every publication would then stream into memory — up to `uploads.temporary_capacity_bytes` times `uploads.max_concurrency` of it — and the directory the next section has you create would sit unused. Nothing fails at startup, which is exactly why it is named here.
 
 `LoadCredential` is what makes one file readable by two services running as different users without widening it: each unit receives a copy on tmpfs at `%d`, mode `0400`, owned by that unit's user and inside that unit's mount namespace, destroyed when the service stops. Neither service can see the other's copy, and the file on disk stays unreadable to everything but root — which a shared group would not achieve, because a group is a standing grant anyone can later be added to. On a host without systemd 247 or later, fall back to a `rux-config` group holding both service users with the file at `0640 root:rux-config`. Do not reach for POSIX ACLs instead: they carry the same exposure and are silently dropped by `cp`, `install`, and most restore paths, so the protection would depend on an attribute a recovery can erase. Never `0644`.
 
@@ -128,7 +150,13 @@ SystemCallArchitectures=native
 WantedBy=multi-user.target
 ```
 
-Create `/var/lib/rux-server/uploads` owned by `rux-server` before starting; publication streams bounded multipart uploads through it.
+Create `/var/lib/rux-server/uploads` owned by `rux-server` before starting; publication streams bounded multipart uploads through it, and `ProtectSystem=strict` refuses to start a unit whose `ReadWritePaths` names a directory that does not exist:
+
+```bash
+sudo install -d -m 0700 -o rux-server -g rux-server /var/lib/rux-server /var/lib/rux-server/uploads
+```
+
+`AF_NETLINK` is deliberately absent from `RestrictAddressFamilies`: glibc's resolver opens a netlink socket to enumerate local addresses but treats a refusal as "assume both families are present", so name resolution to Spaces and GitHub still works. If a future dependency resolves names itself rather than through `getaddrinfo`, that assumption is the thing to re-check.
 
 ## Caddy
 
@@ -235,17 +263,34 @@ This unit is deliberately weaker than the API's, and the difference is worth und
 
 One consequence of a single configuration file is worth stating rather than discovering: `rux-playgroundd` can read the registry's database password and GitHub client secret, because its credential copy is the whole document. Under the two-file arrangement this replaced, it could not. This is a deliberate trade and an acceptable one, because the broker is in the `docker` group and docker-socket access is root-equivalent on this host — a broker that wanted those values could always have read the API's environment file through a privileged container. What actually changes is the blast radius of a defect in the broker that is *not* a full compromise: a core file or a stray debug format now has the registry's credentials in scope. That is why every credential is a `Secret` whose `Debug` prints a placeholder, why the broker drops the parsed document as soon as it has taken its own settings, and why `UMask=0077` and the empty capability set above matter. The sandboxed container is unaffected either way: a compromised run still sees only its own `0700` job mount, never the broker's memory or filesystem.
 
-Add a `tmpfiles.d` entry so `/run/rux-playground` is recreated on boot, owned by `rux-playground:rux-playground` at mode `0750`. Start the broker before the API so the socket exists on the API's first request.
+Both directories the unit names have to exist before it starts. `useradd --system` does not create a home directory, so `/var/lib/rux-playground` is not there yet, and `/run` is a tmpfs, so `/run/rux-playground` is gone after every boot — either one missing from `ReadWritePaths` fails the unit while systemd is still setting up its mount namespace, before a line of our code runs:
+
+```bash
+sudo install -d -m 0750 -o rux-playground -g rux-playground /var/lib/rux-playground
+printf 'd /run/rux-playground 0750 rux-playground rux-playground -\n' \
+  | sudo tee /etc/tmpfiles.d/rux-playground.conf > /dev/null
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/rux-playground.conf
+```
+
+The `0750` on the runtime directory is what lets `rux-server` reach the socket through the shared group without letting anything else on the host near it. Nothing below `/var/lib/rux-playground` needs creating by hand: the broker makes `jobs_root` on first use and each job directory `0700` under it. Start the broker before the API so the socket exists on the API's first request.
 
 ## The deploy account
 
-The pipeline reaches this host as an unprivileged account that can `sudo`. Create it once, by hand:
+The pipeline reaches this host as an unprivileged account that can `sudo`. Its key is generated on your own machine rather than on the droplet, so the private half never rests on the host it opens:
+
+```bash
+ssh-keygen -t ed25519 -a 100 -C github-actions-deploy -f ~/.ssh/rux-deploy -N ""
+```
+
+No passphrase, deliberately: the workflow writes the key out and runs `ssh` non-interactively, so a passphrase would hang the deploy rather than protect it. What protects this key is that it lives in a GitHub environment restricted to `v*` tags and grants nothing but this one account.
+
+Then create the account, with `~/.ssh/rux-deploy.pub` pasted in place of the placeholder below. The restriction options and the key are one physical line — a wrapped line is read as a second, malformed key rather than as a continuation:
 
 ```bash
 sudo adduser --disabled-password --gecos '' deploy
 sudo install -d -m 0700 -o deploy -g deploy /home/deploy/.ssh
 sudo -u deploy tee /home/deploy/.ssh/authorized_keys > /dev/null <<'KEY'
-no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc ssh-ed25519 AAAA... github-actions-deploy
+no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... github-actions-deploy
 KEY
 sudo chmod 0600 /home/deploy/.ssh/authorized_keys
 echo 'deploy ALL=(root) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/rux-deploy > /dev/null
@@ -254,6 +299,18 @@ sudo visudo --check
 ```
 
 The key restrictions matter more than they look. Without `no-port-forwarding` that key could tunnel straight to PostgreSQL on `127.0.0.1:5432`, which is otherwise unreachable from outside the host.
+
+Prove both halves from your machine before a tag depends on them, because the first thing the pipeline does with this key is stop a running service:
+
+```bash
+ssh -i ~/.ssh/rux-deploy deploy@<host> 'sudo -n true && echo ok'
+```
+
+`ok` says the key is accepted and the sudoers entry needs no password. A `-L` tunnel that fails with the same key is `no-port-forwarding` working, not a broken key. The private half then becomes `DEPLOY_SSH_KEY` in the `production` environment, with the three secrets beside it in [Deploying a new version](#deploying-a-new-version) — `DEPLOY_KNOWN_HOSTS` among them, which is why it is worth reading this host's own fingerprint now, from the session you already trust, rather than believing whatever `ssh-keyscan` returns later:
+
+```bash
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+```
 
 Be plain about what this grants: **the deploy key is root-equivalent on this droplet, and pushing a tag is enough to use it.** That is the accepted trade for an automated deploy that also migrates the database — the sequence has to stop services, write to `/srv`, and read a `0400 root:root` configuration file. What the sudoers entry buys is attribution, not containment: every command is `deploy`'s in `auth.log` rather than an anonymous root login. What actually limits the blast radius is on GitHub's side: the `production` environment restricted to `v*` tags, a tag ruleset that only maintainers can create, and branch protection on `main`.
 
@@ -267,6 +324,20 @@ sudo apt-get install -y python3 postgresql-client-18 util-linux curl
 ```
 
 `python3` parses the configuration file, `pg_dump` takes the pre-migration snapshot, and `flock` from `util-linux` keeps two deploys from overlapping. No Rust toolchain is needed: the SQLx CLI travels in the release tarball, already pinned to the workspace's SQLx version.
+
+That lock is `/var/lock/rux-deploy.lock` — `/var/lock` is a symlink to `/run/lock`, so it is the same tmpfs the entries below name — and the script opens it as `deploy` rather than through `sudo`, so confirm once that the account can actually create it. Ubuntu ships `/run/lock` world-writable and sticky, but a hardened image may not, and the failure arrives as a deploy that gives up before it has done anything:
+
+```bash
+ls -ld /run/lock && sudo -u deploy touch /var/lock/rux-deploy.lock
+```
+
+If it is not, have `tmpfiles.d` keep that one file in existence and owned by `deploy` — opening an existing file for writing needs permission on the file, not on its directory, so this fixes the lock without widening `/run/lock` for everything else on the host and without the deploy script differing from the one in the repository:
+
+```bash
+printf 'f /run/lock/rux-deploy.lock 0600 deploy deploy -\n' \
+  | sudo tee /etc/tmpfiles.d/rux-deploy.conf > /dev/null
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/rux-deploy.conf
+```
 
 ## Deploying a new version
 

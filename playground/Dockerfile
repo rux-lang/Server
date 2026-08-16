@@ -57,8 +57,10 @@ LABEL org.opencontainers.image.title="rux-playground" \
       org.opencontainers.image.version="${RUX_VERSION}"
 
 # A fixed uid so the daemon can mount its 0700 job directory readable by this
-# user; the host's rux-playground service account must be created with the same
-# id. See docs/deployment.md.
+# user; the host's rux-playground service account should be given the same id
+# where it is free. A differing one still runs - see the note below - but only
+# a matching one owns this home rather than merely reading it. See
+# docs/deployment.md.
 RUN groupadd --gid 1000 play \
  && useradd --uid 1000 --gid 1000 --home-dir /home/play --create-home --shell /usr/sbin/nologin play
 
