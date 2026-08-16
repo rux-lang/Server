@@ -8,6 +8,7 @@ The Rust server for the Rux programming language. It hosts the package registry 
 ## Structure
 
 - `src/`: Axum composition root and HTTP contract, plus the `rux-playgroundd` binary.
+- `config/`: the commented local-development configuration both binaries read.
 - `crates/`: domain, manifest, artifact, application, infrastructure, and sandbox layers.
 - `migrations/`: reviewed SQLx migrations.
 - `playground/`: the sandbox container image and its containment tests.
@@ -19,15 +20,15 @@ The playground runs submitted code in a throwaway container, and is the only par
 
 ## Development
 
-Requires a local PostgreSQL 18 and a local MinIO with a versioned `packages` bucket, both installed natively and reachable at the addresses in `.env.example`.
+Requires a local PostgreSQL 18 and a local MinIO with a versioned `packages` bucket, both installed natively and reachable at the addresses in [config/config.toml](config/config.toml).
 
 ```powershell
-Copy-Item .env.example .env
-.\Import-LocalEnv.ps1
-$env:DATABASE_URL = $env:RUX_DATABASE_URL
+$env:DATABASE_URL = "postgres://registry:registry@localhost:5432/registry"
 sqlx migrate run
 cargo run -p rux-server
 ```
+
+Configuration is one TOML file. Both binaries read it, taking its path from `--config` and defaulting to the committed [config/config.toml](config/config.toml), which is why a fresh checkout runs with no arguments. That file is for local development only — every value in it names a local service or is a placeholder, and production reads its own root-owned `/etc/rux/config.toml` instead. `DATABASE_URL` above is separate because it belongs to the SQLx CLI, not to the server.
 
 The local API listens on <http://localhost:8080>. Liveness, readiness, and OpenAPI are available at `/health/live`, `/health/ready`, and `/openapi/v1.json`. Logs are structured JSON on stdout; there is no metrics endpoint.
 
@@ -40,7 +41,7 @@ cargo test --workspace --all-features
 cargo build --workspace --release
 ```
 
-Production secrets belong in root-owned API environment files and must never be committed. The browser origin and callback are configured independently with `RUX_ALLOWED_WEB_ORIGIN` and `RUX_WEB_CALLBACK_URL`.
+Production secrets belong in the root-owned `/etc/rux/config.toml` and must never be committed. The browser origin and callback are configured independently with `web.allowed_origin` and `web.callback_url`.
 
 ## Contributing
 

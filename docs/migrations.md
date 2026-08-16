@@ -10,14 +10,13 @@ Use the SQLx CLI release that matches the workspace's SQLx dependency. The curre
 cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features rustls,postgres
 ```
 
-SQLx CLI reads `DATABASE_URL`, while the API reads `RUX_DATABASE_URL`. For the local database, import the repository environment and copy the value for the CLI process:
+The SQLx CLI reads `DATABASE_URL` from the environment, while the API reads `database.url` from its configuration file. The two are deliberately separate: migrations are an operator step, not something the API does at startup, so the credential that can change the schema is not the one the service runs with. Set it for the CLI process from the same value your `config/config.toml` carries:
 
 ```powershell
-.\Import-LocalEnv.ps1
-$env:DATABASE_URL = $env:RUX_DATABASE_URL
+$env:DATABASE_URL = "postgres://registry:registry@localhost:5432/registry"
 ```
 
-Do not commit a database URL or put a production credential directly in a command. In production, source `DATABASE_URL` from the root-owned environment file rather than typing it.
+Do not commit a database URL or put a production credential directly in a command. In production, read `DATABASE_URL` out of the root-owned `/etc/rux/config.toml` rather than typing it; that file is readable only by root, which is the intent.
 
 ## Create a migration
 

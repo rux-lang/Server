@@ -12,9 +12,8 @@
 //! The exchange is one newline-terminated JSON frame each way, defined in
 //! `rux_sandbox::protocol`. Submitted source is never logged.
 
-use std::error::Error;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,6 +25,7 @@ use rux_sandbox::{
     DockerSandbox, DockerSandboxConfig, IdentitySegment, PackageAllowlist, SandboxError,
     SandboxLimits, SandboxOutcome, SandboxRequest,
 };
+use rux_server::config::{self, ConfigError, ConfigFile};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
@@ -60,126 +60,112 @@ struct DaemonConfig {
 }
 
 impl DaemonConfig {
-    /// Reads the configuration from the process environment.
-    fn from_env() -> Result<Self, Box<dyn Error>> {
-        Self::parse(|name| std::env::var(name).ok())
+    /// Reads, deserializes, and validates the configuration at `path`.
+    fn load(path: &Path) -> Result<Self, ConfigError> {
+        let file = config::load(path)?;
+        Self::from_file(&file).map_err(|detail| ConfigError::invalid(path, detail))
+        // The whole document, including the registry's credentials, is dropped
+        // here: only the broker's own settings outlive this call.
     }
 
-    /// Reads the configuration from an arbitrary lookup.
-    ///
-    /// Taking the source as a parameter keeps parsing testable without any
-    /// process-wide environment mutation.
-    fn parse(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, Box<dyn Error>> {
-        let value = |name: &str, default: &str| lookup(name).unwrap_or_else(|| default.to_owned());
-        let bounded = |name: &str, default: u64, minimum: u64, maximum: u64| {
-            bounded_u64(name, lookup(name).as_deref(), default, minimum, maximum)
-        };
+    /// Validates the daemon's own sections of an already-parsed document.
+    fn from_file(file: &ConfigFile) -> Result<Self, String> {
+        let broker = file
+            .playground
+            .broker
+            .as_ref()
+            .ok_or("playground.broker is required to run the sandbox broker")?;
 
-        let image = lookup("RUX_PLAYGROUND_IMAGE")
-            .filter(|image| !image.trim().is_empty())
-            .ok_or("RUX_PLAYGROUND_IMAGE must be set")?;
+        let image = config::required_text("playground.broker.image", broker.image.as_deref())?;
 
-        let defaults = SandboxLimits::default();
         let limits = SandboxLimits {
-            memory_bytes: bounded(
-                "RUX_PLAYGROUND_MEMORY_BYTES",
-                defaults.memory_bytes,
+            memory_bytes: config::bounded(
+                "playground.broker.limits.memory_bytes",
+                broker.limits.memory_bytes,
                 16 * 1024 * 1024,
                 4 * 1024 * 1024 * 1024,
             )?,
-            cpu_millis: u32::try_from(bounded(
-                "RUX_PLAYGROUND_CPU_MILLIS",
-                defaults.cpu_millis.into(),
+            cpu_millis: bounded_u32(
+                "playground.broker.limits.cpu_millis",
+                broker.limits.cpu_millis,
                 100,
                 16_000,
-            )?)?,
-            compile_timeout_seconds: u32::try_from(bounded(
-                "RUX_PLAYGROUND_COMPILE_TIMEOUT_SECONDS",
-                defaults.compile_timeout_seconds.into(),
+            )?,
+            compile_timeout_seconds: bounded_u32(
+                "playground.broker.limits.compile_timeout_seconds",
+                broker.limits.compile_timeout_seconds,
                 1,
                 120,
-            )?)?,
-            run_timeout_seconds: u32::try_from(bounded(
-                "RUX_PLAYGROUND_RUN_TIMEOUT_SECONDS",
-                defaults.run_timeout_seconds.into(),
+            )?,
+            run_timeout_seconds: bounded_u32(
+                "playground.broker.limits.run_timeout_seconds",
+                broker.limits.run_timeout_seconds,
                 1,
                 120,
-            )?)?,
-            ..defaults
+            )?,
+            ..SandboxLimits::default()
         };
         // Reject a nonsensical combination here rather than on the first run.
-        limits.validate()?;
+        limits
+            .validate()
+            .map_err(|error| format!("playground.broker.limits are not usable: {error}"))?;
 
-        let max_concurrency =
-            usize::try_from(bounded("RUX_PLAYGROUND_MAX_CONCURRENCY", 2, 1, 16)?)?;
-        let request_timeout = Duration::from_secs(bounded(
-            "RUX_PLAYGROUND_REQUEST_TIMEOUT_SECONDS",
-            30,
-            1,
-            120,
-        )?);
+        let socket = file.playground.socket.trim();
+        if socket.is_empty() {
+            return Err("playground.socket is required".to_owned());
+        }
 
         Ok(Self {
-            socket_path: PathBuf::from(value("RUX_PLAYGROUND_SOCKET", DEFAULT_SOCKET)),
+            socket_path: PathBuf::from(socket),
             sandbox: DockerSandboxConfig {
-                jobs_root: PathBuf::from(value(
-                    "RUX_PLAYGROUND_JOBS_ROOT",
-                    rux_sandbox::DEFAULT_JOBS_ROOT,
-                )),
+                jobs_root: broker.jobs_root.clone(),
                 image,
-                docker_binary: PathBuf::from(value(
-                    "RUX_PLAYGROUND_DOCKER_BINARY",
-                    rux_sandbox::DEFAULT_DOCKER_BINARY,
-                )),
+                docker_binary: broker.docker_binary.clone(),
                 limits,
-                allowlist: parse_allowlist(&value("RUX_PLAYGROUND_PACKAGES", ""))?,
+                allowlist: parse_allowlist(&broker.packages)?,
                 probe_timeout: Duration::from_secs(2),
             },
-            max_concurrency,
-            request_timeout,
+            max_concurrency: usize::try_from(config::bounded(
+                "playground.broker.max_concurrency",
+                broker.max_concurrency,
+                1,
+                16,
+            )?)
+            .expect("the configured upper bound fits usize"),
+            request_timeout: Duration::from_secs(config::bounded(
+                "playground.broker.request_timeout_seconds",
+                broker.request_timeout_seconds,
+                1,
+                120,
+            )?),
         })
     }
 }
 
-fn bounded_u64(
-    name: &str,
-    input: Option<&str>,
-    default: u64,
-    minimum: u64,
-    maximum: u64,
-) -> Result<u64, Box<dyn Error>> {
-    let Some(input) = input else {
-        return Ok(default);
-    };
-
-    let parsed = input
-        .parse::<u64>()
-        .map_err(|_| format!("{name} must be a whole number"))?;
-    if !(minimum..=maximum).contains(&parsed) {
-        return Err(format!("{name} must be between {minimum} and {maximum}").into());
-    }
-
-    Ok(parsed)
+/// Range-checks a setting whose target type is narrower than the schema's.
+fn bounded_u32(key: &str, value: u64, minimum: u64, maximum: u64) -> Result<u32, String> {
+    let checked = config::bounded(key, value, minimum, maximum)?;
+    Ok(u32::try_from(checked).expect("the configured upper bound fits u32"))
 }
 
 /// Parses `Root:Namespace` pairs into the import allowlist.
 ///
 /// The sandbox has no network, so this may only name packages already seeded
 /// into the image; adding one means rebuilding the image.
-fn parse_allowlist(input: &str) -> Result<PackageAllowlist, Box<dyn Error>> {
-    let mut entries = Vec::new();
+fn parse_allowlist(entries: &[String]) -> Result<PackageAllowlist, String> {
+    let mut parsed = Vec::new();
 
-    for entry in input.split(',').map(str::trim).filter(|e| !e.is_empty()) {
-        let (root, namespace) = entry.split_once(':').ok_or_else(|| {
-            format!("RUX_PLAYGROUND_PACKAGES entry {entry:?} must be Root:Namespace")
-        })?;
-        entries.push((
-            IdentitySegment::new(root.trim())?,
-            IdentitySegment::new(namespace.trim())?,
+    for entry in entries.iter().map(|entry| entry.trim()) {
+        let invalid =
+            || format!("playground.broker.packages entry {entry:?} must be \"Root:Namespace\"");
+        let (root, namespace) = entry.split_once(':').ok_or_else(invalid)?;
+        parsed.push((
+            IdentitySegment::new(root.trim()).map_err(|_| invalid())?,
+            IdentitySegment::new(namespace.trim()).map_err(|_| invalid())?,
         ));
     }
 
-    Ok(PackageAllowlist::new(entries))
+    Ok(PackageAllowlist::new(parsed))
 }
 
 /// What the daemon can do with a submission.
@@ -330,6 +316,10 @@ mod unix {
     use tokio::signal::unix::{SignalKind, signal};
     use tokio::sync::Semaphore;
 
+    // Imported here rather than at the top of the file: on a host without
+    // Unix sockets this module does not exist, and the import would be dead.
+    use rux_server::config::config_path;
+
     use super::{DaemonConfig, DockerSandbox, SOCKET_MODE, init_logging, serve_connection};
 
     pub fn main() -> ExitCode {
@@ -355,7 +345,10 @@ mod unix {
     }
 
     async fn run() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DaemonConfig::from_env()?;
+        // Configuration is read before logging is installed, so a bad file is
+        // reported on stderr rather than swallowed by the JSON subscriber.
+        let path = config_path(std::env::args())?;
+        let config = DaemonConfig::load(&path)?;
         init_logging();
 
         let listener = bind(&config.socket_path).await?;
@@ -455,7 +448,6 @@ mod unix {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -467,6 +459,8 @@ mod tests {
     };
     use tokio::io::BufReader;
     use tokio::sync::{Semaphore, oneshot};
+
+    use rux_server::config::ConfigFile;
 
     use super::{DaemonConfig, JobRunner, failure_for, parse_allowlist, serve_connection};
 
@@ -556,38 +550,49 @@ mod tests {
         response
     }
 
-    fn environment(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-            .collect()
+    /// Configures the daemon from a TOML fragment.
+    ///
+    /// A fragment need only carry the broker's own sections: the registry's
+    /// required values are checked when the API converts the same document,
+    /// not when it deserializes.
+    fn broker(fragment: &str) -> Result<DaemonConfig, String> {
+        let file = toml_edit::de::from_str::<ConfigFile>(fragment)
+            .map_err(|error| error.message().to_owned())?;
+        DaemonConfig::from_file(&file)
     }
 
-    fn parse(pairs: &[(&str, &str)]) -> Result<DaemonConfig, Box<dyn std::error::Error>> {
-        let source = environment(pairs);
-        DaemonConfig::parse(move |name| source.get(name).cloned())
+    fn allowlist(entries: &[&str]) -> Result<rux_sandbox::PackageAllowlist, String> {
+        let owned = entries
+            .iter()
+            .map(|entry| (*entry).to_owned())
+            .collect::<Vec<_>>();
+        parse_allowlist(&owned)
     }
 
     #[test]
     fn the_image_is_the_only_required_setting() {
-        let config = parse(&[("RUX_PLAYGROUND_IMAGE", "rux-playground:1")])
+        let config = broker("[playground.broker]\nimage = \"rux-playground:1\"\n")
             .expect("an image alone should configure the daemon");
 
         assert_eq!(config.sandbox.image, "rux-playground:1");
         assert_eq!(config.max_concurrency, 2);
         assert_eq!(config.sandbox.limits, SandboxLimits::default());
-        assert!(parse(&[]).is_err());
-        assert!(parse(&[("RUX_PLAYGROUND_IMAGE", "  ")]).is_err());
+        assert_eq!(
+            config.socket_path,
+            std::path::PathBuf::from(super::DEFAULT_SOCKET)
+        );
+        assert!(broker("[playground.broker]\n").is_err());
+        assert!(broker("[playground.broker]\nimage = \"  \"\n").is_err());
+        // A host that never configured the broker must not start one.
+        assert!(broker("").is_err());
     }
 
     #[test]
-    fn tunable_limits_are_read_from_the_environment() {
-        let config = parse(&[
-            ("RUX_PLAYGROUND_IMAGE", "rux-playground:1"),
-            ("RUX_PLAYGROUND_COMPILE_TIMEOUT_SECONDS", "20"),
-            ("RUX_PLAYGROUND_RUN_TIMEOUT_SECONDS", "9"),
-            ("RUX_PLAYGROUND_MAX_CONCURRENCY", "8"),
-        ])
+    fn tunable_limits_are_read_from_the_configuration_file() {
+        let config = broker(
+            "[playground.broker]\nimage = \"rux-playground:1\"\nmax_concurrency = 8\n\
+             [playground.broker.limits]\ncompile_timeout_seconds = 20\nrun_timeout_seconds = 9\n",
+        )
         .expect("bounded overrides should configure the daemon");
 
         assert_eq!(config.sandbox.limits.compile_timeout_seconds, 20);
@@ -597,38 +602,43 @@ mod tests {
 
     #[test]
     fn every_knob_is_bounded_rather_than_trusted() {
-        for (name, value) in [
-            ("RUX_PLAYGROUND_MAX_CONCURRENCY", "0"),
-            ("RUX_PLAYGROUND_MAX_CONCURRENCY", "17"),
-            ("RUX_PLAYGROUND_COMPILE_TIMEOUT_SECONDS", "0"),
-            ("RUX_PLAYGROUND_COMPILE_TIMEOUT_SECONDS", "121"),
-            ("RUX_PLAYGROUND_RUN_TIMEOUT_SECONDS", "600"),
-            ("RUX_PLAYGROUND_MEMORY_BYTES", "1024"),
-            ("RUX_PLAYGROUND_CPU_MILLIS", "0"),
-            ("RUX_PLAYGROUND_REQUEST_TIMEOUT_SECONDS", "0"),
-            ("RUX_PLAYGROUND_MAX_CONCURRENCY", "many"),
+        for fragment in [
+            "[playground.broker]\nmax_concurrency = 0\n",
+            "[playground.broker]\nmax_concurrency = 17\n",
+            "[playground.broker]\nrequest_timeout_seconds = 0\n",
+            "[playground.broker.limits]\ncompile_timeout_seconds = 0\n",
+            "[playground.broker.limits]\ncompile_timeout_seconds = 121\n",
+            "[playground.broker.limits]\nrun_timeout_seconds = 600\n",
+            "[playground.broker.limits]\nmemory_bytes = 1024\n",
+            "[playground.broker.limits]\ncpu_millis = 0\n",
+            // The format refuses a non-numeric value before any bound is
+            // consulted, which the environment form could not do.
+            "[playground.broker]\nmax_concurrency = \"many\"\n",
+            // A fixed limit is not configurable, and naming one is a typo
+            // rather than a request.
+            "[playground.broker.limits]\npid_limit = 4\n",
+            "[playground.broker.limits]\nmax_source_bytes = 65536\n",
+            // A misspelled section must not be silently ignored.
+            "[playground.brokerr]\nimage = \"rux-playground:1\"\n",
         ] {
+            let document = format!("[playground.broker]\nimage = \"rux-playground:1\"\n{fragment}");
             assert!(
-                parse(&[("RUX_PLAYGROUND_IMAGE", "rux-playground:1"), (name, value)]).is_err(),
-                "expected {name}={value} to be refused"
+                broker(&document).is_err(),
+                "expected this to be refused:\n{fragment}"
             );
         }
     }
 
     #[test]
     fn the_package_allowlist_is_parsed_as_root_and_namespace_pairs() {
-        let allowlist =
-            parse_allowlist(" Std:Rux , Json:Rux ").expect("well-formed entries should parse");
+        let parsed =
+            allowlist(&["Std:Rux", " Json:Rux "]).expect("well-formed entries should parse");
 
-        assert!(!allowlist.is_empty());
-        assert!(
-            parse_allowlist("")
-                .expect("an empty list is allowed")
-                .is_empty()
-        );
-        assert!(parse_allowlist("Std").is_err());
-        assert!(parse_allowlist("Std:").is_err());
-        assert!(parse_allowlist("not a segment:Rux").is_err());
+        assert!(!parsed.is_empty());
+        assert!(allowlist(&[]).expect("an empty list is allowed").is_empty());
+        assert!(allowlist(&["Std"]).is_err());
+        assert!(allowlist(&["Std:"]).is_err());
+        assert!(allowlist(&["not a segment:Rux"]).is_err());
     }
 
     #[tokio::test]

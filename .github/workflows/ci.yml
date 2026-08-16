@@ -88,22 +88,18 @@ jobs:
     needs: [rust, playground]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Configuration reaches both binaries through config/config.toml, written
+    # below. These are only the values the shell steps also need - MinIO's
+    # credentials, the origin header, the socket to wait on - so the prefix
+    # keeps anyone from reading them as server configuration.
     env:
-      RUX_BIND_ADDRESS: 127.0.0.1:8080
-      RUX_DATABASE_URL: postgres://registry:registry@localhost:5432/registry
-      RUX_STORAGE_ENDPOINT: http://localhost:9000
-      RUX_STORAGE_BUCKET: packages
-      RUX_STORAGE_ACCESS_KEY: registry
-      RUX_STORAGE_SECRET_KEY: registry-secret
-      RUX_STORAGE_REGION: us-east-1
-      RUX_STORAGE_FORCE_PATH_STYLE: "true"
-      RUX_ALLOWED_WEB_ORIGIN: http://localhost:3000
-      RUX_WEB_CALLBACK_URL: http://localhost:3000/packages/-/auth/callback
-      RUX_GITHUB_CLIENT_ID: smoke-test-client
-      RUX_GITHUB_CLIENT_SECRET: smoke-test-secret
-      RUX_GITHUB_CALLBACK_URL: http://localhost:8080/v1/auth/github/callback
-      RUX_PLAYGROUND_ENABLED: "true"
-      RUX_PLAYGROUND_SOCKET: ${{ github.workspace }}/playground.sock
+      SMOKE_DATABASE_URL: postgres://registry:registry@localhost:5432/registry
+      SMOKE_STORAGE_ENDPOINT: http://localhost:9000
+      SMOKE_STORAGE_BUCKET: packages
+      SMOKE_STORAGE_ACCESS_KEY: registry
+      SMOKE_STORAGE_SECRET_KEY: registry-secret
+      SMOKE_WEB_ORIGIN: http://localhost:3000
+      SMOKE_SOCKET: ${{ github.workspace }}/playground.sock
     services:
       postgres:
         image: postgres:18-alpine
@@ -121,6 +117,50 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      # Replaces the committed development copy in place rather than passing
+      # --config, so this job exercises the default path. Written in full so
+      # the smoke run does not drift when the development config is edited.
+      - name: Write the server configuration
+        run: |
+          mkdir -p config "${GITHUB_WORKSPACE}/playground-jobs"
+          cat > config/config.toml <<TOML
+          [server]
+          bind_address = "127.0.0.1:8080"
+
+          [database]
+          url = "${SMOKE_DATABASE_URL}"
+
+          [storage]
+          endpoint = "${SMOKE_STORAGE_ENDPOINT}"
+          bucket = "${SMOKE_STORAGE_BUCKET}"
+          access_key = "${SMOKE_STORAGE_ACCESS_KEY}"
+          secret_key = "${SMOKE_STORAGE_SECRET_KEY}"
+          region = "us-east-1"
+          force_path_style = true
+
+          [packages]
+          cdn_base_url = "${SMOKE_STORAGE_ENDPOINT}/${SMOKE_STORAGE_BUCKET}/"
+
+          [web]
+          allowed_origin = "${SMOKE_WEB_ORIGIN}"
+          callback_url = "${SMOKE_WEB_ORIGIN}/packages/-/auth/callback"
+
+          [github]
+          client_id = "smoke-test-client"
+          client_secret = "smoke-test-secret"
+          callback_url = "http://localhost:8080/v1/auth/github/callback"
+
+          [playground]
+          socket = "${SMOKE_SOCKET}"
+
+          [playground.api]
+          enabled = true
+
+          [playground.broker]
+          image = "rux-playground:${PLAYGROUND_RUX_VERSION}"
+          jobs_root = "${GITHUB_WORKSPACE}/playground-jobs"
+          TOML
+          cat config/config.toml
       # Run natively rather than in a container, the same way local development
       # does, so the only container runtime this job needs is the sandbox's.
       - name: Start MinIO
@@ -133,8 +173,8 @@ jobs:
             --output .minio/mc \
             "https://dl.min.io/client/mc/release/linux-amd64/archive/mc.${MINIO_MC_VERSION}"
           chmod +x .minio/minio .minio/mc
-          MINIO_ROOT_USER="$RUX_STORAGE_ACCESS_KEY" \
-          MINIO_ROOT_PASSWORD="$RUX_STORAGE_SECRET_KEY" \
+          MINIO_ROOT_USER="$SMOKE_STORAGE_ACCESS_KEY" \
+          MINIO_ROOT_PASSWORD="$SMOKE_STORAGE_SECRET_KEY" \
             .minio/minio server .minio/data --address 127.0.0.1:9000 > .minio/minio.log 2>&1 &
           echo $! > .minio/minio.pid
           for _ in {1..60}; do
@@ -143,27 +183,25 @@ jobs:
             fi
             sleep 1
           done
-          .minio/mc alias set local "$RUX_STORAGE_ENDPOINT" \
-            "$RUX_STORAGE_ACCESS_KEY" "$RUX_STORAGE_SECRET_KEY"
-          .minio/mc mb --ignore-existing "local/$RUX_STORAGE_BUCKET"
+          .minio/mc alias set local "$SMOKE_STORAGE_ENDPOINT" \
+            "$SMOKE_STORAGE_ACCESS_KEY" "$SMOKE_STORAGE_SECRET_KEY"
+          .minio/mc mb --ignore-existing "local/$SMOKE_STORAGE_BUCKET"
           # Publication relies on versioned objects, and the orphan sweep lists
           # and deletes specific versions.
-          .minio/mc version enable "local/$RUX_STORAGE_BUCKET"
+          .minio/mc version enable "local/$SMOKE_STORAGE_BUCKET"
       # Rebuilt here rather than shared from the playground job: moving a ~200 MB
       # image between jobs costs more than building it again, and the two jobs
       # then stay independent.
       - name: Build the pinned sandbox image
         run: bash playground/build-image.sh "$PLAYGROUND_RUX_VERSION" "$PLAYGROUND_RUX_SHA256"
-      # The broker is the only process here that reaches Docker.
+      # The broker is the only process here that reaches Docker. It reads the
+      # same config/config.toml the API does, from [playground.broker].
       - name: Start the playground broker
         run: |
-          export RUX_PLAYGROUND_IMAGE="rux-playground:${PLAYGROUND_RUX_VERSION}"
-          export RUX_PLAYGROUND_JOBS_ROOT="${GITHUB_WORKSPACE}/playground-jobs"
-          mkdir -p "$RUX_PLAYGROUND_JOBS_ROOT"
           cargo run -p rux-server --bin rux-playgroundd > playgroundd.log 2>&1 &
           echo $! > playgroundd.pid
           for _ in {1..90}; do
-            if test -S "$RUX_PLAYGROUND_SOCKET"; then
+            if test -S "$SMOKE_SOCKET"; then
               exit 0
             fi
             sleep 2
@@ -184,7 +222,18 @@ jobs:
           done
           cat api.log
           exit 1
+      # This test is not the server, so its inputs stay on the environment: it
+      # runs with the working directory at the package root, where the default
+      # config path does not resolve.
       - name: Verify object-storage upload contract
+        env:
+          RUX_DATABASE_URL: ${{ env.SMOKE_DATABASE_URL }}
+          RUX_STORAGE_ENDPOINT: ${{ env.SMOKE_STORAGE_ENDPOINT }}
+          RUX_STORAGE_BUCKET: ${{ env.SMOKE_STORAGE_BUCKET }}
+          RUX_STORAGE_ACCESS_KEY: ${{ env.SMOKE_STORAGE_ACCESS_KEY }}
+          RUX_STORAGE_SECRET_KEY: ${{ env.SMOKE_STORAGE_SECRET_KEY }}
+          RUX_STORAGE_REGION: us-east-1
+          RUX_STORAGE_FORCE_PATH_STYLE: "true"
         run: cargo test -p rux-infrastructure --test object_storage -- --ignored
       - name: Verify API contracts
         run: |
@@ -204,7 +253,7 @@ jobs:
           ran=$(curl --fail --silent --show-error \
             --request POST http://localhost:8080/v1/playground/run \
             --header 'content-type: application/json' \
-            --header "origin: $RUX_ALLOWED_WEB_ORIGIN" \
+            --header "origin: $SMOKE_WEB_ORIGIN" \
             --data '{"mode":"run","profile":"debug","source":"func Main() -> int {\n    return 0;\n}\n"}')
           echo "$ran"
           echo "$ran" | jq -e '.data.build.success == true' > /dev/null
@@ -214,7 +263,7 @@ jobs:
           broken=$(curl --fail --silent --show-error \
             --request POST http://localhost:8080/v1/playground/run \
             --header 'content-type: application/json' \
-            --header "origin: $RUX_ALLOWED_WEB_ORIGIN" \
+            --header "origin: $SMOKE_WEB_ORIGIN" \
             --data '{"mode":"build","source":"func Main( -> int {}\n"}')
           echo "$broken" | jq -e '.data.build.success == false' > /dev/null
           echo "$broken" | jq -e '.data.build.diagnostics | length > 0' > /dev/null

@@ -28,6 +28,7 @@ sha2.workspace = true
 tempfile.workspace = true
 time.workspace = true
 tokio.workspace = true
+toml_edit.workspace = true
 tower_governor.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
@@ -94,7 +95,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 thiserror = "2"
 tempfile = "3"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "net", "signal", "sync", "time"] }
-toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
+toml_edit = { version = "0.25", default-features = false, features = ["parse", "serde"] }
 tower = { version = "0.5", features = ["util"] }
 tower_governor = { version = "0.8", default-features = false, features = ["axum"] }
 tower-http = { version = "0.6", features = ["cors", "limit", "request-id", "sensitive-headers", "trace"] }

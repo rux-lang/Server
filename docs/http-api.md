@@ -194,7 +194,7 @@ The API records the event before returning the redirect. A lookup, transaction, 
 
 `HEAD` on the same route resolves and redirects to the same target without recording an event. Known yanked versions remain downloadable by GET and HEAD; yanking affects new resolver selection rather than immutable stored bytes.
 
-The CDN destination is constructed by appending the version's immutable storage key to `RUX_PACKAGE_CDN_BASE_URL`. That startup-validated base must be an absolute hierarchical URL ending in `/`, without credentials, a query, or a fragment, and must use HTTPS except for loopback development.
+The CDN destination is constructed by appending the version's immutable storage key to `packages.cdn_base_url`. That startup-validated base must be an absolute hierarchical URL ending in `/`, without credentials, a query, or a fragment, and must use HTTPS except for loopback development.
 
 Invalid namespace, package, and version values return `invalid_request` with a source pointer. An unknown exact version returns `package_version_not_found`; a missing package statistics target returns `package_not_found`. Database failures on redirects return `download_unavailable`, while statistics reads use `discovery_unavailable`. No download response serializes database or actor identifiers.
 

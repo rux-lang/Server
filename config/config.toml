@@ -1,0 +1,130 @@
+# Rux Server configuration for local development.
+#
+# This file is committed, and every value in it points at a local service or
+# is a placeholder. Production does not use it: the server reads
+# /etc/rux/config.toml, which is root-owned, holds the real credentials, and
+# is never in this repository. See docs/deployment.md.
+#
+# Nothing here should ever become a real secret. If you need working GitHub
+# OAuth locally, pass your own file with --config and leave this one alone.
+#
+# Both binaries read this one file. Which process a setting belongs to is a
+# property of its key path: [playground.api] is the registry's,
+# [playground.broker] is the daemon's, and playground.socket is the one value
+# both read, so the two cannot disagree about where the socket is.
+#
+# Every value below is the built-in default except the ones marked required,
+# which have no sensible default and must be supplied. Omit any section you do
+# not change. An unknown key is a startup error rather than a silent default,
+# so a typo fails loudly instead of quietly loosening a bound.
+#
+# RUST_LOG stays on the environment: it is tracing-subscriber's contract, not
+# ours. DATABASE_URL likewise belongs to the SQLx CLI, and is deliberately
+# separate from database.url below - see docs/migrations.md.
+
+[server]
+bind_address = "127.0.0.1:8080"
+
+[database]
+# Required.
+url = "postgres://registry:registry@localhost:5432/registry"
+
+[storage]
+endpoint = "http://localhost:9000"           # required
+bucket = "packages"                          # required
+access_key = "registry"                      # required
+secret_key = "registry-secret"               # required
+region = "us-east-1"
+force_path_style = true
+
+[packages]
+# Where a download redirect points. An absolute hierarchical base ending in
+# "/", with no query or fragment, HTTPS except for loopback development.
+cdn_base_url = "http://localhost:9000/packages/"
+
+[web]
+# The browser origin and the callback are configured independently on purpose,
+# but the callback's origin must equal allowed_origin exactly.
+allowed_origin = "http://localhost:3000"
+callback_url = "http://localhost:3000/packages/-/auth/callback"
+
+[github]
+client_id = "replace-with-github-oauth-client-id"          # required
+client_secret = "replace-with-github-oauth-client-secret"  # required
+callback_url = "http://localhost:8080/v1/auth/github/callback"
+
+[uploads]
+# Omit temporary_directory to use the operating-system temporary directory
+# below "rux-server-uploads". Present and empty is an error, not a second way
+# of asking for the default.
+# temporary_directory = "/var/lib/rux-server/uploads"
+temporary_capacity_bytes = 104857600         # 5 MiB - 10 GiB
+max_concurrency = 8                          # 1 - 64
+
+[orphan_cleanup]
+# A publication that stored its object but failed to commit leaves a
+# recognisable orphan; this bounded sweep removes it.
+interval_seconds = 3600                      # positive
+minimum_age_seconds = 86400                  # positive
+scan_limit = 1000                            # 1 - 1000
+delete_limit = 100                           # 1 - scan_limit
+
+[abuse]
+# Only these networks may supply client-address forwarding data. An empty list
+# disables proxy trust entirely, which is not the same as omitting the key.
+trusted_proxy_cidrs = ["127.0.0.0/8", "::1/128"]
+request_timeout_seconds = 30                 # 1 - 120
+publication_timeout_seconds = 120            # request_timeout_seconds - 600
+
+# Five tiers, each with a per-minute rate of 1 - 10000 and a burst of
+# 1 - per_minute. Naming a tier means giving both numbers: the two are coupled,
+# and a default burst means nothing once the rate has moved.
+[abuse.rate_limit.read]
+per_minute = 120
+burst = 60
+
+[abuse.rate_limit.security]
+per_minute = 30
+burst = 10
+
+[abuse.rate_limit.mutation]
+per_minute = 60
+burst = 20
+
+[abuse.rate_limit.publication]
+per_minute = 6
+burst = 2
+
+[abuse.rate_limit.playground]
+per_minute = 10
+burst = 4
+
+[playground]
+socket = "/run/rux-playground/run.sock"
+
+# Read by rux-server. With enabled false the routes are never mounted, so both
+# endpoints answer 404 from the fallback rather than 503, and a host without
+# Docker is a fully working registry.
+[playground.api]
+enabled = false
+timeout_seconds = 30                         # 1 - 120, >= abuse.request_timeout_seconds
+max_concurrency = 2                          # 1 - 16, runs the API will admit
+
+# Read by rux-playgroundd. Omit the whole section on a host that does not run
+# the broker; the API never reads it.
+# [playground.broker]
+# image = "rux-playground:0.3.0"             # required by the broker
+# jobs_root = "/var/lib/rux-playground/jobs"
+# docker_binary = "/usr/bin/docker"
+# packages = []                              # ["Std:Rux"], already seeded into the image
+# max_concurrency = 2                        # 1 - 16, containers actually running
+# request_timeout_seconds = 30               # 1 - 120, one frame exchange
+
+# Only these four sandbox limits are tunable. The source, stdin, output, pid,
+# tmpfs, and startup-grace bounds are fixed constants, and naming one here is
+# an unknown-key error.
+# [playground.broker.limits]
+# memory_bytes = 134217728                   # 16 MiB - 4 GiB
+# cpu_millis = 500                           # 100 - 16000
+# compile_timeout_seconds = 5                # 1 - 120
+# run_timeout_seconds = 3                    # 1 - 120

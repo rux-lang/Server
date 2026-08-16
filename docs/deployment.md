@@ -52,14 +52,23 @@ Create a DigitalOcean Space for package artifacts with versioning enabled. Objec
 
 ## Configuration
 
-Configuration is environment-only and `RUX_`-prefixed; every setting is parsed and validated in `src/config.rs` and listed in [.env.example](../.env.example). Production values live in root-owned files that the units read:
+Configuration is one TOML file, parsed and validated in `src/config.rs` and documented key by key in [config/config.toml](../config/config.toml), the committed local-development copy. Both binaries read it, and each is given its path with `--config`; without that argument they look for `config/config.toml` relative to the working directory. Which process a setting belongs to is a property of its key path: `[playground.api]` is the registry's, `[playground.broker]` is the daemon's, and `playground.socket` is the one value both read, so the two cannot disagree about where the socket is.
+
+An unknown key is a startup error rather than a silent default, and every bound is checked before the process serves anything, so a typo fails loudly instead of quietly loosening a limit. Config is read before logging is installed, so those failures arrive on stderr with a line and column rather than in the JSON log.
+
+Install one root-owned file and hand each unit a private copy through systemd's credential mechanism:
 
 ```bash
-sudo install -d -m 0750 -o root -g rux-server /etc/rux-server
-sudo install -m 0640 -o root -g rux-server /dev/null /etc/rux-server/api.env
+sudo install -d -m 0755 -o root -g root /etc/rux
+sudo install -m 0400 -o root -g root /dev/null /etc/rux/config.toml
+sudoedit /etc/rux/config.toml
 ```
 
-At minimum `api.env` sets `RUX_BIND_ADDRESS=127.0.0.1:8080`, `RUX_DATABASE_URL`, the six `RUX_STORAGE_*` values, `RUX_PACKAGE_CDN_BASE_URL`, `RUX_ALLOWED_WEB_ORIGIN`, `RUX_WEB_CALLBACK_URL`, the three `RUX_GITHUB_*` OAuth values, and `RUST_LOG`. The browser origin and the callback are configured independently on purpose. Secrets belong only in these files; they are never committed and never logged.
+At minimum it sets `database.url`, the four required `[storage]` values, `packages.cdn_base_url`, `[web]`, and the two required `[github]` OAuth values. The browser origin and the callback are configured independently on purpose. Secrets belong only in this file; it is never committed and never logged.
+
+`LoadCredential` is what makes one file readable by two services running as different users without widening it: each unit receives a copy on tmpfs at `%d`, mode `0400`, owned by that unit's user and inside that unit's mount namespace, destroyed when the service stops. Neither service can see the other's copy, and the file on disk stays unreadable to everything but root — which a shared group would not achieve, because a group is a standing grant anyone can later be added to. On a host without systemd 247 or later, fall back to a `rux-config` group holding both service users with the file at `0640 root:rux-config`. Do not reach for POSIX ACLs instead: they carry the same exposure and are silently dropped by `cp`, `install`, and most restore paths, so the protection would depend on an attribute a recovery can erase. Never `0644`.
+
+`RUST_LOG` is the one setting that stays on the environment — it belongs to the logging library rather than to us — so each unit sets it with `Environment=`.
 
 ## The API service
 
@@ -78,8 +87,9 @@ Type=simple
 User=rux-server
 Group=rux-server
 WorkingDirectory=/srv/rux-server
-EnvironmentFile=/etc/rux-server/api.env
-ExecStart=/srv/rux-server/bin/rux-server
+LoadCredential=config:/etc/rux/config.toml
+Environment=RUST_LOG=info
+ExecStart=/srv/rux-server/bin/rux-server --config %d/config
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=30s
@@ -120,7 +130,7 @@ Create `/var/lib/rux-server/uploads` owned by `rux-server` before starting; publ
 
 ## Caddy
 
-Install Caddy and use this site block. It refuses the operational routes publicly — readiness exposes dependency names, and nothing outside the host has any reason to reach it:
+Install Caddy and use this site block. It refuses the operational routes publicly — readiness exposes dependency names, and nothing outside the host has any reason to reach it. The two `{$RUX_…}` placeholders below are Caddy's own environment substitution, not the server's configuration; they are the only `RUX_` names left on this host:
 
 ```caddyfile
 {$RUX_API_ADDRESS:api.rux-lang.dev} {
@@ -139,11 +149,11 @@ Install Caddy and use this site block. It refuses the operational routes publicl
 }
 ```
 
-Keep `RUX_TRUSTED_PROXY_CIDRS` at loopback so client-IP resolution trusts only this proxy; see [abuse-controls.md](abuse-controls.md).
+Keep `abuse.trusted_proxy_cidrs` at loopback so client-IP resolution trusts only this proxy; see [abuse-controls.md](abuse-controls.md).
 
 ## The playground (optional)
 
-Skip this whole section unless you want the playground. With `RUX_PLAYGROUND_ENABLED` false the routes are never mounted and both endpoints answer 404 from the fallback, so a host without Docker is a fully working registry.
+Skip this whole section unless you want the playground. With `playground.api.enabled` false the routes are never mounted and both endpoints answer 404 from the fallback, so a host without Docker is a fully working registry.
 
 Install Docker CE and pin it. The daemon needs no container networking, because every run starts with `--network=none` — write `/etc/docker/daemon.json`:
 
@@ -170,7 +180,7 @@ Build the sandbox image on the host with the pinned compiler version and checksu
 bash playground/build-image.sh 0.3.0 82e654f9ced042dc029220836d1322b208790099627f32efd9d8d600834be5cc
 ```
 
-Write `/etc/rux-playground/playground.env` (root-owned, mode `0640`, group `rux-playground`) with `RUX_PLAYGROUND_SOCKET`, `RUX_PLAYGROUND_IMAGE`, `RUX_PLAYGROUND_JOBS_ROOT`, `RUX_PLAYGROUND_DOCKER_BINARY=/usr/bin/docker`, the limit knobs, and `RUST_LOG`. Every knob is range-checked at broker startup, so a typo fails fast rather than loosening the sandbox. Then `/etc/systemd/system/rux-playground.service`:
+The broker reads the same `/etc/rux/config.toml` the API does, under `[playground.broker]`: `image` is required, and `jobs_root`, `docker_binary`, `packages`, `max_concurrency`, `request_timeout_seconds`, and the four `[playground.broker.limits]` knobs all default. Every one is range-checked at broker startup and an unrecognised key is refused outright, so a typo fails fast rather than loosening the sandbox. Note that `playground.socket` is shared with the API and belongs in `[playground]`, not here. Then `/etc/systemd/system/rux-playground.service`:
 
 ```ini
 [Unit]
@@ -186,8 +196,9 @@ User=rux-playground
 Group=rux-playground
 SupplementaryGroups=docker
 WorkingDirectory=/var/lib/rux-playground
-EnvironmentFile=/etc/rux-playground/playground.env
-ExecStart=/srv/rux-server/bin/rux-playgroundd
+LoadCredential=config:/etc/rux/config.toml
+Environment=RUST_LOG=info
+ExecStart=/srv/rux-server/bin/rux-playgroundd --config %d/config
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=30s
@@ -219,6 +230,8 @@ WantedBy=multi-user.target
 ```
 
 This unit is deliberately weaker than the API's, and the difference is worth understanding rather than closing. Anything that can talk to the Docker socket can already ask the daemon to do root's work, so hardening the broker is not what contains a compromise — the container flag set the sandbox passes is (`--network=none`, read-only root, dropped capabilities, pid and memory limits), and that lives in `crates/sandbox` where it is unit-tested. Two flags that would fight the Docker CLI are omitted rather than pretended: `RestrictNamespaces` is absent because the CLI's exec path into the daemon is not audited against it, and `ProtectSystem=strict` is kept only because `/run/docker.sock` is listed read-write, since connecting to a unix socket counts as a write.
+
+One consequence of a single configuration file is worth stating rather than discovering: `rux-playgroundd` can read the registry's database password and GitHub client secret, because its credential copy is the whole document. Under the two-file arrangement this replaced, it could not. This is a deliberate trade and an acceptable one, because the broker is in the `docker` group and docker-socket access is root-equivalent on this host — a broker that wanted those values could always have read the API's environment file through a privileged container. What actually changes is the blast radius of a defect in the broker that is *not* a full compromise: a core file or a stray debug format now has the registry's credentials in scope. That is why every credential is a `Secret` whose `Debug` prints a placeholder, why the broker drops the parsed document as soon as it has taken its own settings, and why `UMask=0077` and the empty capability set above matter. The sandboxed container is unaffected either way: a compromised run still sees only its own `0700` job mount, never the broker's memory or filesystem.
 
 Add a `tmpfiles.d` entry so `/run/rux-playground` is recreated on boot, owned by `rux-playground:rux-playground` at mode `0750`. Start the broker before the API so the socket exists on the API's first request.
 

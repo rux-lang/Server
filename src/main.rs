@@ -1,4 +1,3 @@
-mod config;
 mod health;
 
 use std::sync::Arc;
@@ -8,7 +7,6 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
 use axum::middleware;
-use config::ApiConfig;
 use rux_application::{
     AccountLifecycleService, ApiTokenService, ApiTokens, Authentication, AuthenticationService,
     DashboardService, DependencyProbe, DiscoveryService, DownloadService, Downloads,
@@ -17,6 +15,7 @@ use rux_application::{
     Publications, ResolverIndexService, TokenAuthorizer, YankService, Yanks,
 };
 use rux_infrastructure::{GitHubOAuthClient, Infrastructure, OsCredentialGenerator, SystemClock};
+use rux_server::config::ApiConfig;
 use tokio::sync::watch;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::sensitive_headers::{
@@ -39,7 +38,9 @@ enum Exit {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = ApiConfig::from_environment()?;
+    // Configuration is read before logging is installed, so a bad file is
+    // reported on stderr rather than swallowed by the JSON subscriber.
+    let config = ApiConfig::load(&rux_server::config::config_path(std::env::args())?)?;
     rux_server::logging::init()?;
     let cleanup_config = config.orphan_cleanup;
     let abuse = rux_server::abuse::AbuseControls::new(config.abuse.clone());

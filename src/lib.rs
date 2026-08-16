@@ -2,6 +2,7 @@ pub mod abuse;
 pub mod account;
 pub mod auth;
 pub mod cleanup;
+pub mod config;
 pub mod contract;
 pub mod dashboard;
 pub mod discovery;
