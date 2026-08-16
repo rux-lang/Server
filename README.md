@@ -1,7 +1,6 @@
 # Rux Server
 
 [![CI](https://github.com/rux-lang/Server/actions/workflows/ci.yml/badge.svg)](https://github.com/rux-lang/Server/actions/workflows/ci.yml)
-[![Supply Chain](https://github.com/rux-lang/Server/actions/workflows/supply-chain.yml/badge.svg)](https://github.com/rux-lang/Server/actions/workflows/supply-chain.yml)
 [![License](https://img.shields.io/github/license/rux-lang/Server?style=flat)](LICENSE.md)
 
 The Rust server for the Rux programming language. It hosts the package registry and the playground; language tooling and chat integrations are planned alongside them. The public API is hosted at <https://api.rux-lang.dev>; the package catalog is part of <https://rux-lang.dev/packages>.

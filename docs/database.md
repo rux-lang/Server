@@ -73,30 +73,6 @@ Metadata is action-specific and allowlisted. It is limited to replacement sessio
 
 Owner dashboard activity derives a normalized `namespace_key` from the closed audit shape: namespace subjects already use the normalized subject key, while package-version actions derive it from their allowlisted namespace metadata. The generated value is indexed with descending occurrence time and ID so current memberships can read a stable bounded activity feed without exposing the underlying audit representation. Recent package previews likewise use a package/publication-time index. Dashboard download queries reuse the existing time-first and package-version-first download indexes for 30-day and all-time aggregates.
 
-## Local catalog fixtures
-
-After applying migrations to the local database, seed representative catalog metadata with:
-
-```powershell
-psql $env:RUX_DATABASE_URL --set=ON_ERROR_STOP=1 --file=tools/catalog/local-catalog.sql
-```
-
-The fixture contains 100 packages across 12 namespaces — `StdLib`, `CommunityTools`, `Acme`, `Northwind`, `Helio`, `Cobalt`, `Ironbark`, `Lumen`, `Meridian`, `Orbit`, `Sentinel`, and `Vantage` — with 2 to 10 releases each. It deliberately leaves `Rux` unused so that namespace stays free to claim by hand when exercising the dashboard. Its 633 versions span executable, shared-library, static-library, and source-library packages and cover prereleases, build-metadata variants, yanked releases, ordered authors and keywords, generated READMEs, license expressions, search text, a dependency graph, and 90 days of download history.
-
-Display names are PascalCase with no separators, so `HttpClient` normalizes to `httpclient`. The `_` → `-` normalization path is still exercised, by the unit fixtures in `src/discovery.rs` rather than by this seed.
-
-`tools/catalog/local-catalog.sql` is **generated, not hand-edited**. Regenerate it after changing the curated list in `tools/catalog/packages.mjs`:
-
-```powershell
-node tools/catalog/generate-catalog.mjs
-```
-
-The generator is deterministic — its PRNG is seeded from each package's identity — so an unchanged input produces a byte-identical file. It prints the row counts asserted by `crates/infrastructure/tests/local_catalog_seed.rs`; update those together.
-
-The seed is one transaction and takes a transaction-scoped advisory lock to serialize concurrent invocations. Every catalog insert uses stable identities with `ON CONFLICT DO NOTHING`; it never updates, deletes, or truncates data. `download_events` has no natural key to conflict on, so it is guarded by `NOT EXISTS` instead — without that, re-running would double every count and skew the popularity ranking. Running the seed again therefore preserves local changes and unrelated rows while adding only what is still absent.
-
-Only PostgreSQL catalog metadata and download history are seeded. The fixture does not create users, ownership, credentials, audit records, or MinIO objects. Its artifact checksums and `local-seed/` storage keys are deterministic placeholders, so seeded package downloads are not expected to resolve to an object.
-
 ## Schema verification
 
 The infrastructure migration and repository tests create isolated PostgreSQL databases. They verify the schema contract, adapter round trips, logical conflict mapping, full-width semantic-version components, aggregate ordering, and explicit commit and rollback behavior. Tests require a PostgreSQL URL whose user can create test databases:
