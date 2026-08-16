@@ -7,6 +7,7 @@ The Rust server for the Rux programming language. It hosts the package registry 
 
 ## Structure
 
+- `Run.ps1`: every development command in one script; run it with no arguments for full help.
 - `src/`: Axum composition root and HTTP contract, plus the `rux-playgroundd` binary.
 - `config/`: the commented local-development configuration both binaries read.
 - `crates/`: domain, manifest, artifact, application, infrastructure, and sandbox layers.
@@ -22,6 +23,16 @@ The playground runs submitted code in a throwaway container, and is the only par
 
 Requires a local PostgreSQL 18 and a local MinIO with a versioned `packages` bucket, both installed natively and reachable at the addresses in [config/config.toml](config/config.toml).
 
+[Run.ps1](Run.ps1) collects every development command. Run it with no arguments for full help; `doctor` reports which of the two services is missing and how to start it.
+
+```powershell
+./Run.ps1 doctor          # toolchain, PostgreSQL, MinIO, and configuration
+./Run.ps1 migrate         # apply pending migrations
+./Run.ps1 dev             # start the API
+```
+
+It echoes each invocation before making it, so the same thing by hand is:
+
 ```powershell
 $env:DATABASE_URL = "postgres://registry:registry@localhost:5432/registry"
 sqlx migrate run
@@ -30,9 +41,13 @@ cargo run -p rux-server
 
 Configuration is one TOML file. Both binaries read it, taking its path from `--config` and defaulting to the committed [config/config.toml](config/config.toml), which is why a fresh checkout runs with no arguments. That file is for local development only — every value in it names a local service or is a placeholder, and production reads its own root-owned `/etc/rux/config.toml` instead. `DATABASE_URL` above is separate because it belongs to the SQLx CLI, not to the server.
 
+Keep your own credentials out of the repository: `./Run.ps1 config init` copies the committed file to `%APPDATA%\rux\config.toml`, and every command prefers that copy once it exists. It is a whole configuration rather than an overlay, because the server does no layering and refuses unknown keys.
+
 The local API listens on <http://localhost:8080>. Liveness, readiness, and OpenAPI are available at `/health/live`, `/health/ready`, and `/openapi/v1.json`. Logs are structured JSON on stdout; there is no metrics endpoint.
 
 ## Quality gates
+
+All four, in this order, are what CI runs; `./Run.ps1 check` runs them in one step and stops at the first failure.
 
 ```bash
 cargo fmt --all -- --check
