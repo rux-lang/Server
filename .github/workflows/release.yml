@@ -249,6 +249,12 @@ jobs:
             echo "## Deploy v${VERSION}"
             echo
             echo '```'
-            cat deploy.log
+            # An earlier step can fail before the deploy runs, and a summary that
+            # dies on the missing log reports itself instead of the real cause.
+            if test -f deploy.log; then
+              cat deploy.log
+            else
+              echo '(the deploy did not run; see the failing step above)'
+            fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
